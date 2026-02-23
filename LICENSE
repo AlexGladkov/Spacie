@@ -1,0 +1,47 @@
+Spacie — Non-Commercial License
+
+Copyright (c) 2026 Spacie Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, merge, and distribute the Software for NON-COMMERCIAL PURPOSES
+ONLY, subject to the following conditions:
+
+1. NON-COMMERCIAL USE ONLY
+   The Software may only be used for personal, educational, research, or other
+   non-commercial purposes. Any use of the Software, in whole or in part, for
+   commercial advantage or monetary compensation is strictly prohibited without
+   prior written permission from the copyright holder.
+
+   "Commercial use" includes, but is not limited to:
+   - Selling the Software or derivative works
+   - Using the Software as part of a paid product or service
+   - Using the Software in a commercial environment for profit-generating
+     activities
+   - Bundling the Software with commercially distributed products
+   - Offering the Software as a hosted or managed service for a fee
+
+2. REDISTRIBUTION
+   Redistribution of the Software, with or without modification, is permitted
+   provided that:
+   a) This license notice and copyright notice are included in all copies or
+      substantial portions of the Software.
+   b) Redistributed copies are provided under the same non-commercial terms.
+   c) Modified versions are clearly marked as such and not misrepresented as
+      the original Software.
+
+3. CONTRIBUTIONS
+   By submitting contributions (pull requests, patches, etc.) to this project,
+   you agree to license your contributions under the same terms as this license.
+
+4. COMMERCIAL LICENSING
+   For commercial use rights, contact the copyright holder to obtain a separate
+   commercial license agreement.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
