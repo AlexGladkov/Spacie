@@ -14,15 +14,25 @@ import SwiftUI
 ///   - rootIndex: The tree index of the current visualization root.
 ///   - sizeMode: Whether to use logical or physical sizes.
 ///   - maxRings: Maximum number of concentric rings to generate (default 5).
+///   - useEntryCount: When `true`, proportions are based on `entryCount` instead
+///     of byte sizes. Used during Yellow phase for approximate visualization.
 /// - Returns: An array of `SegmentData` for all visible segments.
 func buildSunburstLayout(
     tree: FileTree,
     rootIndex: UInt32,
     sizeMode: SizeMode,
-    maxRings: Int = VisualizationConstants.sunburstMaxRings
+    maxRings: Int = VisualizationConstants.sunburstMaxRings,
+    useEntryCount: Bool = false
 ) -> [SegmentData] {
     var segments: [SegmentData] = []
-    let rootSize = tree.size(of: rootIndex, mode: sizeMode)
+
+    // Closure that returns the "size" value for a node, using either entry count
+    // (Yellow phase approximate) or actual byte sizes (Green phase accurate).
+    let sizeOf: (UInt32) -> UInt64 = useEntryCount
+        ? { UInt64(tree.entryCount(of: $0)) }
+        : { tree.size(of: $0, mode: sizeMode) }
+
+    let rootSize = sizeOf(rootIndex)
     guard rootSize > 0 else { return segments }
 
     let rootInfo = tree.nodeInfo(at: rootIndex)
@@ -38,7 +48,8 @@ func buildSunburstLayout(
         startAngle: 0,
         endAngle: 2 * .pi,
         childrenCount: rootInfo.childCount,
-        isDirectory: rootInfo.isDirectory
+        isDirectory: rootInfo.isDirectory,
+        isVirtual: rootInfo.isVirtual
     )
     segments.append(rootSegment)
 
@@ -71,7 +82,7 @@ func buildSunburstLayout(
         let childIndices = tree.sortedChildren(of: current.nodeIndex, by: .size)
         guard !childIndices.isEmpty else { continue }
 
-        let parentSize = tree.size(of: current.nodeIndex, mode: sizeMode)
+        let parentSize = sizeOf(current.nodeIndex)
         guard parentSize > 0 else { continue }
 
         let parentSweep = current.angleEnd - current.angleStart
@@ -82,7 +93,7 @@ func buildSunburstLayout(
         var otherFileType: FileType = .other
 
         for childIndex in childIndices {
-            let childSize = tree.size(of: childIndex, mode: sizeMode)
+            let childSize = sizeOf(childIndex)
             guard childSize > 0 else { continue }
 
             let proportion = Double(childSize) / Double(parentSize)
@@ -109,7 +120,8 @@ func buildSunburstLayout(
                 startAngle: segmentStart,
                 endAngle: segmentEnd,
                 childrenCount: childInfo.childCount,
-                isDirectory: childInfo.isDirectory
+                isDirectory: childInfo.isDirectory,
+                isVirtual: childInfo.isVirtual
             )
             segments.append(segment)
 
@@ -145,7 +157,8 @@ func buildSunburstLayout(
                 startAngle: segmentStart,
                 endAngle: segmentEnd,
                 childrenCount: 0,
-                isDirectory: false
+                isDirectory: false,
+                isVirtual: false
             )
             segments.append(otherSegment)
         }
@@ -200,6 +213,9 @@ struct SunburstView: View {
                         animateDrillDown()
                     }
                     .onChange(of: state.sizeMode) { _, _ in
+                        rebuildLayout()
+                    }
+                    .onChange(of: state.useEntryCount) { _, _ in
                         rebuildLayout()
                     }
                     .onChange(of: geometry.size) { _, newSize in
@@ -319,30 +335,55 @@ struct SunburstView: View {
             endAngle: Angle(radians: segment.endAngle - .pi / 2)
         )
 
-        let baseColor = SpacieColors.shade(for: segment.fileType, depth: segment.depth)
-        let isHovered = state.hoveredSegmentId == segment.id
-        let isSelected = state.selectedSegmentId == segment.id
+        if segment.isVirtual {
+            // Virtual segments use a muted grey fill with diagonal hatching.
+            context.fill(path, with: .color(SpacieColors.smartScanOtherFill))
+            drawHatchPattern(context: &context, in: path, rect: path.boundingRect)
+        } else {
+            let baseColor = SpacieColors.shade(for: segment.fileType, depth: segment.depth)
+            let isHovered = state.hoveredSegmentId == segment.id
+            let isSelected = state.selectedSegmentId == segment.id
 
-        var fillColor = baseColor
-        if isHovered {
-            fillColor = baseColor.opacity(0.85)
-        }
-        if isSelected {
-            fillColor = baseColor.opacity(0.7)
-        }
+            var fillColor = baseColor
+            if isHovered {
+                fillColor = baseColor.opacity(0.85)
+            }
+            if isSelected {
+                fillColor = baseColor.opacity(0.7)
+            }
 
-        context.fill(path, with: .color(fillColor))
+            context.fill(path, with: .color(fillColor))
+
+            // Highlight border for hovered/selected segments.
+            if isHovered || isSelected {
+                let highlightColor = Color.accentColor.opacity(isSelected ? 0.8 : 0.5)
+                context.stroke(path, with: .color(highlightColor), lineWidth: 2)
+            }
+        }
 
         // Draw segment border.
         let borderColor = colorScheme == .dark
             ? Color.black.opacity(0.4)
             : Color.white.opacity(0.6)
         context.stroke(path, with: .color(borderColor), lineWidth: 0.5)
+    }
 
-        // Highlight border for hovered/selected segments.
-        if isHovered || isSelected {
-            let highlightColor = Color.accentColor.opacity(isSelected ? 0.8 : 0.5)
-            context.stroke(path, with: .color(highlightColor), lineWidth: 2)
+    /// Draws a diagonal hatch pattern clipped to the given path.
+    private func drawHatchPattern(context: inout GraphicsContext, in path: Path, rect: CGRect) {
+        let spacing: CGFloat = 6
+        let lineWidth: CGFloat = 1
+        var inner = context
+        inner.clip(to: path)
+        let maxDim = max(rect.width, rect.height) * 2
+        var offset: CGFloat = -maxDim
+        while offset < maxDim {
+            let start = CGPoint(x: rect.midX + offset, y: rect.minY)
+            let end = CGPoint(x: rect.midX + offset - rect.height, y: rect.maxY)
+            var linePath = Path()
+            linePath.move(to: start)
+            linePath.addLine(to: end)
+            inner.stroke(linePath, with: .color(SpacieColors.smartScanOtherHatch), lineWidth: lineWidth)
+            offset += spacing
         }
     }
 
@@ -392,9 +433,15 @@ struct SunburstView: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
 
-            Text(rootSize.formattedSize)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            if state.useEntryCount {
+                Text("\(rootInfo.entryCount.formatted()) items")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(rootSize.formattedSize)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: min(size.width, size.height) * 0.15)
         .position(x: size.width / 2, y: size.height / 2)
@@ -447,14 +494,30 @@ struct SunburstView: View {
 
         state.hoveredSegmentId = hitSegment.id
 
-        tooltip = TooltipData(
-            name: hitSegment.name,
-            formattedSize: hitSegment.size.formattedSize,
-            fileType: hitSegment.fileType,
-            isDirectory: hitSegment.isDirectory,
-            childrenCount: hitSegment.childrenCount,
-            position: point
-        )
+        if hitSegment.isVirtual {
+            let sizeText = state.useEntryCount
+                ? "\(hitSegment.size.formatted()) items"
+                : hitSegment.size.formattedSize
+            tooltip = TooltipData(
+                name: "Other \u{2014} \(sizeText) (includes unscanned directories, system data, and snapshots)",
+                formattedSize: sizeText,
+                fileType: hitSegment.fileType,
+                isDirectory: hitSegment.isDirectory,
+                childrenCount: hitSegment.childrenCount,
+                position: point
+            )
+        } else {
+            tooltip = TooltipData(
+                name: hitSegment.name,
+                formattedSize: state.useEntryCount
+                    ? "\(hitSegment.size.formatted()) items"
+                    : hitSegment.size.formattedSize,
+                fileType: hitSegment.fileType,
+                isDirectory: hitSegment.isDirectory,
+                childrenCount: hitSegment.childrenCount,
+                position: point
+            )
+        }
     }
 
     /// Performs a hit test to find the segment at the given canvas point.
@@ -502,6 +565,9 @@ struct SunburstView: View {
         guard let hoveredId = state.hoveredSegmentId else { return }
 
         if let segment = segments.first(where: { $0.id == hoveredId }) {
+            // Virtual segments are non-interactive (no drill-down or selection).
+            if segment.isVirtual { return }
+
             if segment.isDirectory && segment.childrenCount > 0 && segment.depth > 0 {
                 // Drill down into directory.
                 state.drillDown(to: segment.id)
@@ -523,7 +589,8 @@ struct SunburstView: View {
             tree: tree,
             rootIndex: state.currentRootIndex,
             sizeMode: state.sizeMode,
-            maxRings: VisualizationConstants.sunburstMaxRings
+            maxRings: VisualizationConstants.sunburstMaxRings,
+            useEntryCount: state.useEntryCount
         )
     }
 

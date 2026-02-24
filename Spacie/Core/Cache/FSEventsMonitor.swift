@@ -91,6 +91,13 @@ final class FSEventsMonitor: @unchecked Sendable {
     /// The coalescing latency in seconds.
     let latency: CFTimeInterval
 
+    /// The event ID from which the stream should report events.
+    ///
+    /// Use `kFSEventStreamEventIdSinceNow` (the default) to receive only
+    /// events that occur after the stream is started. Pass a previously
+    /// persisted event ID to replay events since that point.
+    let sinceWhen: FSEventStreamEventId
+
     /// Callback invoked when events are received.
     private let eventHandler: EventHandler
 
@@ -114,10 +121,19 @@ final class FSEventsMonitor: @unchecked Sendable {
     ///   - path: The root path to monitor for changes.
     ///   - latency: Coalescing interval in seconds. Lower values detect changes
     ///     faster but increase CPU usage. Defaults to 2.0 seconds.
+    ///   - sinceWhen: The event ID from which to report events. Pass a previously
+    ///     saved event ID to replay historical events, or use the default
+    ///     `kFSEventStreamEventIdSinceNow` to receive only future events.
     ///   - handler: Callback invoked on a background queue with batches of events.
-    init(path: String, latency: CFTimeInterval = 2.0, handler: @escaping EventHandler) {
+    init(
+        path: String,
+        latency: CFTimeInterval = 2.0,
+        sinceWhen: FSEventStreamEventId = FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+        handler: @escaping EventHandler
+    ) {
         self.monitoredPath = path
         self.latency = latency
+        self.sinceWhen = sinceWhen
         self.eventHandler = handler
         self.queue = DispatchQueue(label: "com.spacie.fsevents.\(path.hashValue)", qos: .utility)
     }
@@ -161,7 +177,7 @@ final class FSEventsMonitor: @unchecked Sendable {
             Self.streamCallback,
             &context,
             pathsToWatch,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            sinceWhen,
             latency,
             flags
         ) else {
@@ -207,6 +223,34 @@ final class FSEventsMonitor: @unchecked Sendable {
         if let eventStream {
             FSEventStreamFlushSync(eventStream)
         }
+    }
+
+    // MARK: - Event IDs
+
+    /// Returns the latest event ID processed by the active stream.
+    ///
+    /// If the stream is not running, returns `kFSEventStreamEventIdSinceNow`.
+    /// Use this value to persist the stream position before stopping the monitor,
+    /// then pass it as `sinceWhen` on the next launch to replay missed events.
+    func currentEventId() -> FSEventStreamEventId {
+        stateLock.lock()
+        let eventStream = stream
+        stateLock.unlock()
+
+        if let eventStream {
+            return FSEventStreamGetLatestEventId(eventStream)
+        }
+        return FSEventStreamEventId(kFSEventStreamEventIdSinceNow)
+    }
+
+    /// Returns the system-wide current FSEvents event ID.
+    ///
+    /// This represents the most recent event ID across all volumes. Useful for
+    /// capturing a baseline event ID before starting a scan, so that on the next
+    /// launch you can pass it as `sinceWhen` to detect changes that occurred
+    /// while the app was not running.
+    static func currentSystemEventId() -> UInt64 {
+        FSEventsGetCurrentEventId()
     }
 
     // MARK: - Stream Callback

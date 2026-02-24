@@ -4,9 +4,12 @@ import SwiftUI
 
 /// The macOS Settings window for Spacie, opened with Cmd+,.
 ///
-/// Contains three tabs:
+/// Contains six tabs:
 /// - **General**: Default visualization mode, size mode, and old file age threshold.
+/// - **Smart Scan**: Scan profile, coverage threshold, and Smart Scan toggle.
+/// - **Scan Exclusions**: Built-in and user-defined scan exclusion rules.
 /// - **Protected Paths**: View and manage the user blocklist for deletion protection.
+/// - **Cache**: View and manage cached scan data per volume.
 /// - **About**: Application version, GitHub link, and license information.
 ///
 /// All preferences are persisted with `@AppStorage` and take effect immediately.
@@ -19,9 +22,24 @@ struct SettingsView: View {
                     Label("General", systemImage: "gearshape")
                 }
 
+            SmartScanSettingsTab()
+                .tabItem {
+                    Label("Smart Scan", systemImage: "bolt.circle")
+                }
+
+            ScanExclusionsSettingsTab()
+                .tabItem {
+                    Label("Scan Exclusions", systemImage: "eye.slash")
+                }
+
             ProtectedPathsSettingsTab()
                 .tabItem {
                     Label("Protected Paths", systemImage: "shield.lefthalf.filled")
+                }
+
+            CacheSettingsTab()
+                .tabItem {
+                    Label("Cache", systemImage: "archivebox")
                 }
 
             AboutSettingsTab()
@@ -29,7 +47,7 @@ struct SettingsView: View {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 480, height: 500)
     }
 }
 
@@ -80,6 +98,53 @@ private struct GeneralSettingsTab: View {
                     Text("3 years").tag(36)
                 }
                 Text("Files not accessed within this period will appear in the Old Files panel.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+// MARK: - Smart Scan Tab
+
+/// Settings for the Smart Scan feature, which prioritizes important directories
+/// and stops early once a coverage threshold is reached.
+private struct SmartScanSettingsTab: View {
+
+    @AppStorage("smartScanEnabled") private var smartScanEnabled: Bool = true
+    @AppStorage("smartScanProfile") private var smartScanProfile: String = ScanProfileType.default.rawValue
+    @AppStorage("smartScanCoverageThreshold") private var smartScanCoverageThreshold: Double = 0.95
+
+    private var profileBinding: Binding<ScanProfileType> {
+        Binding(
+            get: { ScanProfileType(rawValue: smartScanProfile) ?? .default },
+            set: { smartScanProfile = $0.rawValue }
+        )
+    }
+
+    var body: some View {
+        Form {
+            Section("Smart Scan") {
+                Toggle("Enable Smart Scan", isOn: $smartScanEnabled)
+
+                Picker("Scan Profile", selection: profileBinding) {
+                    ForEach(ScanProfileType.allCases) { profile in
+                        Text(profile.displayName).tag(profile)
+                    }
+                }
+                .disabled(!smartScanEnabled)
+
+                Picker("Coverage Threshold", selection: $smartScanCoverageThreshold) {
+                    Text("90%").tag(0.90)
+                    Text("95%").tag(0.95)
+                    Text("99%").tag(0.99)
+                    Text("100% (Full Scan)").tag(1.0)
+                }
+                .disabled(!smartScanEnabled)
+
+                Text("Smart Scan prioritizes important directories and stops when the coverage threshold is reached. A lower threshold results in faster scans but less detail in the visualization.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -202,6 +267,301 @@ private struct ProtectedPathsSettingsTab: View {
             errorMessage = error.localizedDescription
             showError = true
         }
+    }
+}
+
+// MARK: - Scan Exclusions Tab
+
+/// Displays built-in and user-defined scan exclusion rules.
+///
+/// Built-in exclusions (basenames and path prefixes) are shown read-only
+/// in a disclosure group. User exclusions support CRUD via
+/// ``ScanExclusionManager``.
+private struct ScanExclusionsSettingsTab: View {
+
+    @State private var userExclusions: [String] = ScanExclusionManager.userExclusions
+    @State private var newPattern: String = ""
+    @State private var showError: Bool = false
+    @State private var errorMessage: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Excluded directories are skipped during scanning, dramatically reducing scan time.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            // Add new exclusion
+            HStack {
+                TextField("Directory name or path prefix (e.g., .venv or ~/Backups)", text: $newPattern)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addExclusion() }
+
+                Button("Add") {
+                    addExclusion()
+                }
+                .disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            // Built-in exclusions (read-only)
+            DisclosureGroup("Built-in Exclusions") {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Directory names")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        Text(ScanExclusionManager.defaultBasenames.sorted().joined(separator: ", "))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+
+                        Divider()
+
+                        Text("Path prefixes")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        ForEach(ScanExclusionManager.defaultPathPrefixes, id: \.self) { prefix in
+                            Text(prefix)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                }
+                .frame(height: 100)
+            }
+
+            // User exclusions
+            GroupBox("Custom Exclusions") {
+                if userExclusions.isEmpty {
+                    Text("No custom exclusions defined.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                } else {
+                    List {
+                        ForEach(userExclusions, id: \.self) { pattern in
+                            HStack {
+                                Image(systemName: "eye.slash")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                Text(pattern)
+                                    .font(.system(.callout, design: .monospaced))
+                                Spacer()
+                                Button {
+                                    removeExclusion(pattern)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    .frame(minHeight: 60)
+                }
+            }
+        }
+        .padding()
+        .alert("Error", isPresented: $showError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage)
+        }
+    }
+
+    private func addExclusion() {
+        let trimmed = newPattern.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try ScanExclusionManager.addExclusion(trimmed)
+            userExclusions = ScanExclusionManager.userExclusions
+            newPattern = ""
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+    }
+
+    private func removeExclusion(_ pattern: String) {
+        do {
+            try ScanExclusionManager.removeExclusion(pattern)
+            userExclusions = ScanExclusionManager.userExclusions
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+    }
+}
+
+// MARK: - Cache Tab
+
+/// Displays cached scan data per volume and allows clearing individual caches.
+///
+/// Each row shows the volume name, total cache size (blob + WAL), last scan date,
+/// node count, and completion status. The "Clear" button deletes the cache file,
+/// WAL companion, and directory size companion for the selected volume.
+private struct CacheSettingsTab: View {
+
+    @State private var cacheEntries: [ScanCache.CacheInfo] = []
+    @State private var showClearConfirmation: Bool = false
+    @State private var volumeToClear: ScanCache.CacheInfo?
+
+    /// Byte count formatter configured for file-size display.
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    /// Number formatter with grouping separators for node counts.
+    private static let nodeCountFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Cached scan data allows instant display of previous results on launch.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if cacheEntries.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.tertiary)
+                    Text("No cached scan data")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(cacheEntries, id: \.volumeId) { entry in
+                        cacheRow(for: entry)
+                    }
+                }
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+        }
+        .padding()
+        .onAppear {
+            loadCacheEntries()
+        }
+        .alert(
+            "Clear Cache",
+            isPresented: $showClearConfirmation,
+            presenting: volumeToClear
+        ) { entry in
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                clearCache(for: entry)
+            }
+        } message: { entry in
+            Text("This will delete cached scan data for \(entry.volumeName). The next scan will start from scratch.")
+        }
+    }
+
+    /// Builds a single row displaying cache metadata for a volume.
+    @ViewBuilder
+    private func cacheRow(for entry: ScanCache.CacheInfo) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "internaldrive")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.volumeName)
+                    .font(.callout.bold())
+
+                HStack(spacing: 16) {
+                    Label(
+                        Self.byteFormatter.string(fromByteCount: Int64(entry.cacheSize + entry.walSize)),
+                        systemImage: "doc.zipper"
+                    )
+
+                    Label(
+                        formattedNodeCount(entry.nodeCount),
+                        systemImage: "list.number"
+                    )
+
+                    Label(
+                        entry.isComplete ? "Complete" : "Partial",
+                        systemImage: entry.isComplete ? "checkmark.circle.fill" : "circle.dashed"
+                    )
+                    .foregroundStyle(entry.isComplete ? .green : .orange)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if let date = entry.lastScanDate {
+                    Text(formattedDate(date))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            Button(role: .destructive) {
+                volumeToClear = entry
+                showClearConfirmation = true
+            } label: {
+                Text("Clear")
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Loads cache metadata for all known cached volumes.
+    private func loadCacheEntries() {
+        let volumeIds = ScanCache.allCachedVolumeIds()
+        cacheEntries = volumeIds.compactMap { ScanCache.cacheInfo(for: $0) }
+            .sorted { ($0.cacheSize + $0.walSize) > ($1.cacheSize + $1.walSize) }
+    }
+
+    /// Deletes cache files for a volume and refreshes the list.
+    private func clearCache(for entry: ScanCache.CacheInfo) {
+        let cache = ScanCache(volumeId: entry.volumeId)
+        cache.invalidate()
+        loadCacheEntries()
+    }
+
+    /// Formats a date using relative conventions for today/yesterday and
+    /// abbreviated date + time for older entries.
+    private func formattedDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+
+        if calendar.isDateInToday(date) {
+            let timeFormatter = DateFormatter()
+            timeFormatter.dateFormat = "HH:mm"
+            return "Today, \(timeFormatter.string(from: date))"
+        }
+
+        if calendar.isDateInYesterday(date) {
+            let timeFormatter = DateFormatter()
+            timeFormatter.dateFormat = "HH:mm"
+            return "Yesterday, \(timeFormatter.string(from: date))"
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    /// Formats a node count with grouping separators (e.g., "1,234,567 items").
+    private func formattedNodeCount(_ count: Int) -> String {
+        let formatted = Self.nodeCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
+        return "\(formatted) items"
     }
 }
 

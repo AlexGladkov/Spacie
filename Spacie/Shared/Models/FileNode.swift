@@ -10,9 +10,12 @@ struct FileNodeFlags: OptionSet, Sendable {
     static let isHidden       = FileNodeFlags(rawValue: 1 << 2)
     static let isRestricted   = FileNodeFlags(rawValue: 1 << 3)
     static let isPackage      = FileNodeFlags(rawValue: 1 << 4) // .app, .framework
-    static let isClone        = FileNodeFlags(rawValue: 1 << 5) // APFS clone
+    static let isCompressed   = FileNodeFlags(rawValue: 1 << 5) // APFS transparent compression (decmpfs)
     static let isHardLink     = FileNodeFlags(rawValue: 1 << 6)
     static let isSIPProtected = FileNodeFlags(rawValue: 1 << 7)
+    static let isExcluded     = FileNodeFlags(rawValue: 1 << 8)
+    static let isVirtual      = FileNodeFlags(rawValue: 1 << 9)
+    static let isDeepScanned  = FileNodeFlags(rawValue: 1 << 10)
 }
 
 // MARK: - FileType
@@ -112,17 +115,27 @@ struct FileNode: Sendable {
     var modTime: UInt32
     /// Number of direct children.
     var childCount: UInt32
+    /// Number of direct entries from `readdir()` during shallow scan.
+    /// Used as a size proxy in Phase 1 (Yellow) visualization.
+    var entryCount: UInt32 = 0
     /// inode number (for hard link deduplication).
     var inode: UInt64
+    /// Directory modification time (`st_mtimespec.tv_sec`) as UInt64.
+    /// Only meaningful for directory nodes; 0 for files.
+    /// Used by incremental cache validation to detect structural changes.
+    var dirMtime: UInt64 = 0
 
     var isDirectory: Bool { flags.contains(.isDirectory) }
     var isSymlink: Bool { flags.contains(.isSymlink) }
     var isHidden: Bool { flags.contains(.isHidden) }
     var isRestricted: Bool { flags.contains(.isRestricted) }
     var isPackage: Bool { flags.contains(.isPackage) }
-    var isClone: Bool { flags.contains(.isClone) }
+    var isCompressed: Bool { flags.contains(.isCompressed) }
     var isHardLink: Bool { flags.contains(.isHardLink) }
     var isSIPProtected: Bool { flags.contains(.isSIPProtected) }
+    var isExcluded: Bool { flags.contains(.isExcluded) }
+    var isVirtual: Bool { flags.contains(.isVirtual) }
+    var isDeepScanned: Bool { flags.contains(.isDeepScanned) }
 
     var modificationDate: Date {
         Date(timeIntervalSince1970: TimeInterval(modTime))
@@ -142,6 +155,10 @@ struct RawFileNode: Sendable {
     let inode: UInt64
     let depth: Int
     let parentPath: String
+    var entryCount: UInt32 = 0
+    /// Directory modification time (`st_mtimespec.tv_sec`) as UInt64.
+    /// Only meaningful for directory nodes; 0 for files.
+    var dirMtime: UInt64 = 0
 }
 
 // MARK: - FileNodeInfo (rich info for UI display)
@@ -156,6 +173,12 @@ struct FileNodeInfo: Identifiable, Sendable {
     let fileType: FileType
     let modificationDate: Date
     let childCount: UInt32
+    var entryCount: UInt32 = 0
     let depth: Int
     let flags: FileNodeFlags
+    /// Directory modification time (`st_mtimespec.tv_sec`) as UInt64.
+    /// Only meaningful for directory nodes; 0 for files.
+    var dirMtime: UInt64 = 0
+
+    var isVirtual: Bool { flags.contains(.isVirtual) }
 }

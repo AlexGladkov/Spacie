@@ -52,6 +52,15 @@ enum SpacieColors {
     static let systemData = Color.gray.opacity(0.5)
     static let userData = Color.blue
     static let applicationsColor = Color.green
+
+    // MARK: Smart Scan Colors
+
+    /// Teal indicator for Smart Green phase in the info bar.
+    static let smartGreenIndicator = Color(red: 0.0, green: 0.75, blue: 0.72)
+    /// Muted grey fill for the virtual "Other" segment in visualizations.
+    static let smartScanOtherFill = Color(red: 0.70, green: 0.72, blue: 0.74).opacity(0.4)
+    /// Slightly darker grey for the hatch pattern overlay on the "Other" segment.
+    static let smartScanOtherHatch = Color(red: 0.60, green: 0.62, blue: 0.64).opacity(0.5)
 }
 
 // MARK: - Size Formatting

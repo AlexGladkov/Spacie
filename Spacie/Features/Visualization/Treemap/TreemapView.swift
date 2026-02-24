@@ -13,22 +13,32 @@ import SwiftUI
 ///   - sizeMode: Whether to use logical or physical sizes.
 ///   - rect: The bounding rectangle to fill.
 ///   - maxDepth: Maximum nesting depth to render (default 3).
+///   - useEntryCount: When `true`, proportions are based on `entryCount` instead
+///     of byte sizes. Used during Yellow phase for approximate visualization.
 /// - Returns: An array of `RectSegment` for all visible rectangles.
 func buildTreemapLayout(
     tree: FileTree,
     rootIndex: UInt32,
     sizeMode: SizeMode,
     rect: CGRect,
-    maxDepth: Int = VisualizationConstants.treemapMaxDepth
+    maxDepth: Int = VisualizationConstants.treemapMaxDepth,
+    useEntryCount: Bool = false
 ) -> [RectSegment] {
     var segments: [RectSegment] = []
-    let rootSize = tree.size(of: rootIndex, mode: sizeMode)
+
+    // Closure that returns the "size" value for a node, using either entry count
+    // (Yellow phase approximate) or actual byte sizes (Green phase accurate).
+    let sizeOf: (UInt32) -> UInt64 = useEntryCount
+        ? { UInt64(tree.entryCount(of: $0)) }
+        : { tree.size(of: $0, mode: sizeMode) }
+
+    let rootSize = sizeOf(rootIndex)
     guard rootSize > 0, rect.width > 0, rect.height > 0 else { return segments }
 
     layoutNode(
         tree: tree,
         nodeIndex: rootIndex,
-        sizeMode: sizeMode,
+        sizeOf: sizeOf,
         rect: rect,
         depth: 0,
         maxDepth: maxDepth,
@@ -40,17 +50,20 @@ func buildTreemapLayout(
 }
 
 /// Recursively lays out a single node and its children using the squarified algorithm.
+///
+/// - Parameter sizeOf: Closure returning the effective size for a node index.
+///   In entry-count mode this returns the `entryCount`; otherwise byte size.
 private func layoutNode(
     tree: FileTree,
     nodeIndex: UInt32,
-    sizeMode: SizeMode,
+    sizeOf: (UInt32) -> UInt64,
     rect: CGRect,
     depth: Int,
     maxDepth: Int,
     totalParentSize: UInt64,
     segments: inout [RectSegment]
 ) {
-    let nodeSize = tree.size(of: nodeIndex, mode: sizeMode)
+    let nodeSize = sizeOf(nodeIndex)
     guard nodeSize > 0, rect.width >= 1, rect.height >= 1 else { return }
 
     let nodeInfo = tree.nodeInfo(at: nodeIndex)
@@ -65,7 +78,8 @@ private func layoutNode(
             depth: depth,
             rect: rect,
             childrenCount: nodeInfo.childCount,
-            isDirectory: nodeInfo.isDirectory
+            isDirectory: nodeInfo.isDirectory,
+            isVirtual: nodeInfo.isVirtual
         )
         segments.append(segment)
     }
@@ -83,7 +97,7 @@ private func layoutNode(
     }
 
     let children: [ChildEntry] = childIndices.compactMap { index in
-        let size = tree.size(of: index, mode: sizeMode)
+        let size = sizeOf(index)
         return size > 0 ? ChildEntry(index: index, size: size) : nil
     }
 
@@ -111,7 +125,7 @@ private func layoutNode(
         layoutNode(
             tree: tree,
             nodeIndex: children[i].index,
-            sizeMode: sizeMode,
+            sizeOf: sizeOf,
             rect: childRect,
             depth: depth + 1,
             maxDepth: maxDepth,
@@ -302,6 +316,9 @@ struct TreemapView: View {
                     .onChange(of: state.sizeMode) { _, _ in
                         rebuildLayout(in: currentSize)
                     }
+                    .onChange(of: state.useEntryCount) { _, _ in
+                        rebuildLayout(in: currentSize)
+                    }
                     .onChange(of: geometry.size) { _, newSize in
                         debouncedResize(to: newSize)
                     }
@@ -353,23 +370,35 @@ struct TreemapView: View {
         let rect = segment.rect
         guard rect.width >= 1, rect.height >= 1 else { return }
 
-        let isHovered = state.hoveredSegmentId == segment.id
-        let isSelected = state.selectedSegmentId == segment.id
-
-        // Fill color.
-        let baseColor = SpacieColors.shade(for: segment.fileType, depth: segment.depth)
-        var fillColor = baseColor
-        if isHovered {
-            fillColor = baseColor.opacity(0.85)
-        }
-        if isSelected {
-            fillColor = baseColor.opacity(0.7)
-        }
-
         let roundedRect = RoundedRectangle(cornerRadius: 2)
             .path(in: rect)
 
-        context.fill(roundedRect, with: .color(fillColor))
+        if segment.isVirtual {
+            // Virtual segments use muted grey fill with diagonal hatching.
+            context.fill(roundedRect, with: .color(SpacieColors.smartScanOtherFill))
+            drawHatchPattern(context: &context, in: roundedRect, rect: rect)
+        } else {
+            let isHovered = state.hoveredSegmentId == segment.id
+            let isSelected = state.selectedSegmentId == segment.id
+
+            // Fill color.
+            let baseColor = SpacieColors.shade(for: segment.fileType, depth: segment.depth)
+            var fillColor = baseColor
+            if isHovered {
+                fillColor = baseColor.opacity(0.85)
+            }
+            if isSelected {
+                fillColor = baseColor.opacity(0.7)
+            }
+
+            context.fill(roundedRect, with: .color(fillColor))
+
+            // Highlight border for hovered/selected.
+            if isHovered || isSelected {
+                let highlightColor = Color.accentColor.opacity(isSelected ? 0.9 : 0.6)
+                context.stroke(roundedRect, with: .color(highlightColor), lineWidth: 2)
+            }
+        }
 
         // Border.
         let borderColor = colorScheme == .dark
@@ -381,12 +410,6 @@ struct TreemapView: View {
             lineWidth: VisualizationConstants.treemapBorderWidth
         )
 
-        // Highlight border for hovered/selected.
-        if isHovered || isSelected {
-            let highlightColor = Color.accentColor.opacity(isSelected ? 0.9 : 0.6)
-            context.stroke(roundedRect, with: .color(highlightColor), lineWidth: 2)
-        }
-
         // Text label (name + size) if the rectangle is large enough.
         if segment.canDisplayLabel {
             drawLabel(
@@ -394,6 +417,25 @@ struct TreemapView: View {
                 segment: segment,
                 in: rect
             )
+        }
+    }
+
+    /// Draws a diagonal hatch pattern clipped to the given path.
+    private func drawHatchPattern(context: inout GraphicsContext, in path: Path, rect: CGRect) {
+        let spacing: CGFloat = 6
+        let lineWidth: CGFloat = 1
+        var inner = context
+        inner.clip(to: path)
+        let maxDim = max(rect.width, rect.height) * 2
+        var offset: CGFloat = -maxDim
+        while offset < maxDim {
+            let start = CGPoint(x: rect.midX + offset, y: rect.minY)
+            let end = CGPoint(x: rect.midX + offset - rect.height, y: rect.maxY)
+            var linePath = Path()
+            linePath.move(to: start)
+            linePath.addLine(to: end)
+            inner.stroke(linePath, with: .color(SpacieColors.smartScanOtherHatch), lineWidth: lineWidth)
+            offset += spacing
         }
     }
 
@@ -429,7 +471,10 @@ struct TreemapView: View {
 
         // Size sublabel.
         if segment.canDisplaySizeLabel {
-            let sizeText = Text(segment.size.formattedSizeShort)
+            let sizeString = state.useEntryCount
+                ? "\(segment.size.formatted()) items"
+                : segment.size.formattedSizeShort
+            let sizeText = Text(sizeString)
                 .font(.system(size: max(9, nameFont(for: rect) - 2)))
                 .foregroundColor(textColor.opacity(0.6))
 
@@ -511,14 +556,30 @@ struct TreemapView: View {
 
         state.hoveredSegmentId = hitSegment.id
 
-        tooltip = TooltipData(
-            name: hitSegment.name,
-            formattedSize: hitSegment.size.formattedSize,
-            fileType: hitSegment.fileType,
-            isDirectory: hitSegment.isDirectory,
-            childrenCount: hitSegment.childrenCount,
-            position: point
-        )
+        if hitSegment.isVirtual {
+            let sizeText = state.useEntryCount
+                ? "\(hitSegment.size.formatted()) items"
+                : hitSegment.size.formattedSize
+            tooltip = TooltipData(
+                name: "Other \u{2014} \(sizeText) (includes unscanned directories, system data, and snapshots)",
+                formattedSize: sizeText,
+                fileType: hitSegment.fileType,
+                isDirectory: hitSegment.isDirectory,
+                childrenCount: hitSegment.childrenCount,
+                position: point
+            )
+        } else {
+            tooltip = TooltipData(
+                name: hitSegment.name,
+                formattedSize: state.useEntryCount
+                    ? "\(hitSegment.size.formatted()) items"
+                    : hitSegment.size.formattedSize,
+                fileType: hitSegment.fileType,
+                isDirectory: hitSegment.isDirectory,
+                childrenCount: hitSegment.childrenCount,
+                position: point
+            )
+        }
     }
 
     /// Handles a tap/click on the currently hovered segment.
@@ -526,6 +587,9 @@ struct TreemapView: View {
         guard let hoveredId = state.hoveredSegmentId else { return }
 
         if let segment = segments.first(where: { $0.id == hoveredId }) {
+            // Virtual segments are non-interactive (no drill-down or selection).
+            if segment.isVirtual { return }
+
             if segment.isDirectory && segment.childrenCount > 0 {
                 state.drillDown(to: segment.id)
             } else {
@@ -547,7 +611,8 @@ struct TreemapView: View {
             rootIndex: state.currentRootIndex,
             sizeMode: state.sizeMode,
             rect: CGRect(origin: .zero, size: size),
-            maxDepth: VisualizationConstants.treemapMaxDepth
+            maxDepth: VisualizationConstants.treemapMaxDepth,
+            useEntryCount: state.useEntryCount
         )
     }
 

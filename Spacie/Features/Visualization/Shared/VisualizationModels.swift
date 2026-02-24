@@ -27,6 +27,8 @@ struct SegmentData: Identifiable, Sendable {
     let childrenCount: UInt32
     /// Whether this node represents a directory.
     let isDirectory: Bool
+    /// Whether this node is a virtual "Other" node from Smart Scan.
+    let isVirtual: Bool
 
     /// The angular sweep of this segment in radians.
     var sweepAngle: Double {
@@ -66,6 +68,8 @@ struct RectSegment: Identifiable, Sendable {
     let childrenCount: UInt32
     /// Whether this node represents a directory.
     let isDirectory: Bool
+    /// Whether this node is a virtual "Other" node from Smart Scan.
+    let isVirtual: Bool
 
     /// Whether the rectangle is large enough to display a text label.
     /// Minimum 60pt wide and 30pt tall.
@@ -125,6 +129,10 @@ final class VisualizationState {
 
     /// The size display mode (logical vs physical).
     var sizeMode: SizeMode
+
+    /// Whether to use entry count instead of file sizes for layout proportions.
+    /// Set to `true` during Yellow phase (approximate visualization).
+    var useEntryCount: Bool = false
 
     // MARK: Initialization
 

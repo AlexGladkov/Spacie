@@ -39,3 +39,18 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.spacie.app
         INFOPLIST_KEY_LSUIElement: false
+
+  SpacieTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: SpacieTests
+    dependencies:
+      - target: Spacie
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spacie.tests
+        PRODUCT_MODULE_NAME: SpacieTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Spacie.app/Contents/MacOS/Spacie"
+        BUNDLE_LOADER: "$(TEST_HOST)"

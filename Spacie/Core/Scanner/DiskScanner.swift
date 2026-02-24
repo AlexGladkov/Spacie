@@ -67,6 +67,7 @@ final class DiskScanner: Sendable {
         var totalLogicalSize: UInt64 = 0
         var totalPhysicalSize: UInt64 = 0
         var restrictedDirectories: UInt64 = 0
+        var skippedDirectories: UInt64 = 0
 
         // Hard link dedup: track seen inodes to avoid double-counting sizes.
         // Only files with nlink > 1 are checked, keeping this set small.
@@ -120,6 +121,40 @@ final class DiskScanner: Sendable {
 
             // ---- Pre-order directory visit ----
             case FTS_D:
+                // Exclusion check — never skip the root directory (depth 0)
+                if depth > 0 {
+                    let nameForCheck = extractEntryName(entry)
+                    if configuration.exclusionRules.shouldExclude(name: nameForCheck, path: currentPath) {
+                        fts_set(fts, entry, FTS_SKIP) // skip entire subtree
+                        skippedDirectories &+= 1
+                        #if DEBUG
+                        print("[ScanExclusion] SKIP: \(currentPath)")
+                        #endif
+
+                        // Emit a placeholder node so the tree still shows this directory
+                        let st = entry.pointee.fts_statp!.pointee
+                        var skipFlags: FileNodeFlags = [.isDirectory, .isExcluded]
+                        if nameForCheck.hasPrefix(".") { skipFlags.insert(.isHidden) }
+
+                        let rawNode = RawFileNode(
+                            name: nameForCheck,
+                            path: currentPath,
+                            logicalSize: 0,
+                            physicalSize: 0,
+                            flags: skipFlags,
+                            fileType: .other,
+                            modTime: UInt32(truncatingIfNeeded: st.st_mtimespec.tv_sec),
+                            inode: st.st_ino,
+                            depth: depth,
+                            parentPath: parentPath(of: currentPath),
+                            dirMtime: UInt64(st.st_mtimespec.tv_sec)
+                        )
+                        continuation.yield(.fileFound(node: rawNode))
+                        continuation.yield(.directorySkipped(path: currentPath, depth: depth))
+                        continue // next fts_read iteration
+                    }
+                }
+
                 directoriesScanned &+= 1
                 continuation.yield(.directoryEntered(path: currentPath, depth: depth))
 
@@ -147,7 +182,8 @@ final class DiskScanner: Sendable {
                     modTime: UInt32(truncatingIfNeeded: st.st_mtimespec.tv_sec),
                     inode: st.st_ino,
                     depth: depth,
-                    parentPath: parentPath(of: currentPath)
+                    parentPath: parentPath(of: currentPath),
+                    dirMtime: UInt64(st.st_mtimespec.tv_sec)
                 )
                 continuation.yield(.fileFound(node: rawNode))
 
@@ -173,10 +209,11 @@ final class DiskScanner: Sendable {
                     }
                 }
 
-                // Detect APFS clone via UF_COMPRESSED flag in st_flags.
-                // On APFS, files compressed with decmpfs or cloned files carry this flag.
+                // Detect APFS transparent compression via UF_COMPRESSED flag in st_flags.
+                // Files compressed with decmpfs carry this flag; st_size reports
+                // uncompressed size while st_blocks reflects compressed on-disk size.
                 if (st.st_flags & UInt32(UF_COMPRESSED)) != 0 {
-                    flags.insert(.isClone)
+                    flags.insert(.isCompressed)
                 }
 
                 totalLogicalSize &+= effectiveLogical
@@ -244,7 +281,8 @@ final class DiskScanner: Sendable {
                     modTime: UInt32(truncatingIfNeeded: st.st_mtimespec.tv_sec),
                     inode: st.st_ino,
                     depth: depth,
-                    parentPath: parentPath(of: currentPath)
+                    parentPath: parentPath(of: currentPath),
+                    dirMtime: UInt64(st.st_mtimespec.tv_sec)
                 )
                 continuation.yield(.fileFound(node: rawNode))
 
@@ -276,7 +314,9 @@ final class DiskScanner: Sendable {
                     continuation.yield(.progress(ScanProgress(
                         filesScanned: filesScanned,
                         directoriesScanned: directoriesScanned,
-                        totalSizeScanned: totalLogicalSize,
+                        skippedDirectories: skippedDirectories,
+                        totalLogicalSizeScanned: totalLogicalSize,
+                        totalPhysicalSizeScanned: totalPhysicalSize,
                         currentPath: currentPath,
                         elapsedTime: elapsedSeconds,
                         estimatedTotalFiles: nil
@@ -296,6 +336,7 @@ final class DiskScanner: Sendable {
             totalLogicalSize: totalLogicalSize,
             totalPhysicalSize: totalPhysicalSize,
             restrictedDirectories: restrictedDirectories,
+            skippedDirectories: skippedDirectories,
             scanDuration: durationSeconds,
             volumeId: configuration.volumeId
         )))

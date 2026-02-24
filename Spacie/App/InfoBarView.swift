@@ -12,9 +12,21 @@ struct InfoBarView: View {
 
     let viewModel: AppViewModel
 
+    private static let buildVersion: String = {
+        let date = Date()
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyMMdd.HHmm"
+        return "b" + fmt.string(from: date)
+    }()
+
     var body: some View {
         HStack(spacing: 0) {
             content
+            cacheStatusBanner
+            Text(Self.buildVersion)
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+                .padding(.leading, 8)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -22,6 +34,97 @@ struct InfoBarView: View {
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity)
         .background(.bar)
+    }
+
+    // MARK: - Cache Status Banner
+
+    /// Displays a subtle text indicator for incremental cache status.
+    ///
+    /// Shown between the main info bar content and the build version label.
+    /// Uses secondary/tertiary foreground styling to remain unobtrusive.
+    @ViewBuilder
+    private var cacheStatusBanner: some View {
+        switch viewModel.cacheStatus {
+        case .none:
+            EmptyView()
+
+        case .loadedChecking(let lastScanDate):
+            HStack(spacing: 4) {
+                separator
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text("Cached data from \(formattedCacheDate(lastScanDate)), checking for changes...")
+                    .foregroundStyle(.tertiary)
+            }
+
+        case .changesFound(let addedBytes, let dirCount):
+            HStack(spacing: 4) {
+                separator
+                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.blue)
+                Text("Found changes: \(formattedBytesDelta(addedBytes)) in \(dirCount) \(dirCount == 1 ? "directory" : "directories")")
+                    .foregroundStyle(.secondary)
+            }
+
+        case .upToDate:
+            HStack(spacing: 4) {
+                separator
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                Text("Data is up to date")
+                    .foregroundStyle(.tertiary)
+            }
+
+        case .corrupted:
+            HStack(spacing: 4) {
+                separator
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Text("Cache corrupted, starting full scan")
+                    .foregroundStyle(.orange)
+            }
+
+        case .volumeNotMounted:
+            HStack(spacing: 4) {
+                separator
+                Image(systemName: "externaldrive.badge.xmark")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Text("Volume not mounted")
+                    .foregroundStyle(.orange)
+            }
+
+        case .resumingScan:
+            // No banner -- standard scan progress is shown in the main content area
+            EmptyView()
+        }
+    }
+
+    /// Formats a date for cache status display (e.g., "today, 14:30" or "Feb 23, 09:15").
+    private func formattedCacheDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+
+        if calendar.isDateInToday(date) {
+            formatter.dateFormat = "'today,' HH:mm"
+        } else if calendar.isDateInYesterday(date) {
+            formatter.dateFormat = "'yesterday,' HH:mm"
+        } else {
+            formatter.dateFormat = "MMM d, HH:mm"
+        }
+
+        return formatter.string(from: date)
+    }
+
+    /// Formats a byte delta for display (e.g., "+1.2 GB" or "-340 MB").
+    private func formattedBytesDelta(_ bytes: Int64) -> String {
+        let prefix = bytes >= 0 ? "+" : ""
+        let absBytes = UInt64(abs(bytes))
+        return "\(prefix)\(absBytes.formattedSize)"
     }
 
     // MARK: - Content
@@ -50,22 +153,25 @@ struct InfoBarView: View {
 
     private func scanningContent(progress: ScanProgress) -> some View {
         HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.mini)
+            scanPhaseIndicator
 
             separator
 
-            statLabel(icon: "doc", text: progress.filesScanned.formattedCount + " files")
+            if progress.phase == .red {
+                statLabel(icon: "folder", text: progress.directoriesScanned.formattedCount + " dirs")
+            } else {
+                statLabel(icon: "doc", text: progress.filesScanned.formattedCount + " files")
+                separator
+                statLabel(icon: "internaldrive", text: progress.totalPhysicalSizeScanned.formattedSize)
+            }
             separator
-            statLabel(icon: "internaldrive", text: progress.totalSizeScanned.formattedSize)
-            separator
-            statLabel(icon: "speedometer", text: String(format: "%.0f files/s", progress.filesPerSecond))
-            separator
+            statLabel(icon: "clock", text: progress.elapsedTime.formattedDuration)
 
-            Text(progress.currentPath)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 300, alignment: .leading)
+            if progress.skippedDirectories > 0 {
+                separator
+                statLabel(icon: "eye.slash", text: progress.skippedDirectories.formattedCount + " skipped")
+                    .foregroundStyle(.orange)
+            }
 
             Spacer()
         }
@@ -75,6 +181,9 @@ struct InfoBarView: View {
 
     private func completedContent(stats: ScanStats) -> some View {
         HStack(spacing: 12) {
+            scanPhaseIndicator
+            separator
+
             statLabel(icon: "doc", text: stats.totalFiles.formattedCount + " files")
             separator
 
@@ -155,6 +264,63 @@ struct InfoBarView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)
+        }
+    }
+
+    // MARK: - Scan Phase Indicator
+
+    /// Traffic light indicator showing the current scan phase (Red / Yellow / Green).
+    @ViewBuilder
+    private var scanPhaseIndicator: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(phaseColor)
+                .frame(width: 8, height: 8)
+            Text(phaseText)
+        }
+    }
+
+    private var phaseColor: Color {
+        switch viewModel.scanPhase {
+        case .red: return .red
+        case .yellow: return .yellow
+        case .smartGreen: return SpacieColors.smartGreenIndicator
+        case .green: return .green
+        }
+    }
+
+    private var phaseText: String {
+        switch viewModel.scanPhase {
+        case .red:
+            if case .scanning(let progress) = viewModel.scanState {
+                return "Scanning structure... \(progress.directoriesScanned.formattedCount) directories"
+            }
+            return "Scanning structure..."
+        case .yellow:
+            if case .scanning(let progress) = viewModel.scanState {
+                let completed = progress.deepScanDirsCompleted
+                let total = progress.deepScanDirsTotal
+                if total > 0 {
+                    let pct = Int(Double(completed) / Double(total) * 100)
+                    return "Approximate data -- deep scan: \(pct)% (\(completed) / \(total) directories)"
+                }
+            }
+            return "Approximate data -- deep scan in progress"
+        case .smartGreen:
+            if case .scanning(let progress) = viewModel.scanState,
+               let coverage = progress.coveragePercent {
+                let pct = Int(coverage * 100)
+                return "Smart Scan: \(pct)% covered (\(progress.scannedBytes.formattedSize) / \(progress.estimatedUsedSpace.formattedSize) used)"
+            }
+            if case .completed = viewModel.scanState {
+                return "Smart Scan complete"
+            }
+            return "Smart Scan complete"
+        case .green:
+            if case .completed(let stats) = viewModel.scanState {
+                return "Scan complete -- \(stats.totalFiles.formattedCount) files, \(stats.totalLogicalSize.formattedSize)"
+            }
+            return "Scan complete"
         }
     }
 

@@ -50,7 +50,7 @@ final class FileTree: @unchecked Sendable {
     private var pathIndex: [String: UInt32]
 
     /// Lock for thread-safe access transitions between build and read phases.
-    private let lock = NSLock()
+    private var _lock = os_unfair_lock()
 
     /// Whether the tree has been finalized (build complete, ready for concurrent reads).
     private(set) var isFinalized: Bool = false
@@ -82,7 +82,8 @@ final class FileTree: @unchecked Sendable {
             fileType: .other,
             modTime: 0,
             childCount: 0,
-            inode: 0
+            inode: 0,
+            dirMtime: 0
         )
         initialNodes.append(sentinel)
 
@@ -107,9 +108,36 @@ final class FileTree: @unchecked Sendable {
     /// - Returns: The index of the newly inserted node, or `nil` if insertion failed.
     @discardableResult
     func insert(_ raw: RawFileNode) -> UInt32? {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return insertUnlocked(raw)
+    }
 
+    /// Inserts a batch of raw file nodes in a single lock acquisition.
+    ///
+    /// Reduces lock contention from once-per-file to once-per-batch.
+    /// Callers should accumulate nodes (e.g., 4096 at a time) before calling.
+    ///
+    /// - Parameter batch: Array of raw file nodes to insert.
+    func insertBatch(_ batch: [RawFileNode]) {
+        guard !batch.isEmpty else { return }
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        nodes.reserveCapacity(nodes.count + batch.count)
+        for raw in batch {
+            insertUnlocked(raw)
+        }
+    }
+
+    /// Internal insertion logic without lock acquisition.
+    ///
+    /// Called by ``insert(_:)`` (single node) and ``insertBatch(_:)`` (batched).
+    /// The caller **must** hold `_lock` before invoking this method.
+    ///
+    /// - Parameter raw: The raw file node from the scanner.
+    /// - Returns: The index of the newly inserted node, or `nil` if insertion failed.
+    @discardableResult
+    private func insertUnlocked(_ raw: RawFileNode) -> UInt32? {
         // Intern the name
         let (nameOffset, nameLength) = stringPool.append(raw.name)
 
@@ -141,7 +169,9 @@ final class FileTree: @unchecked Sendable {
             fileType: raw.fileType,
             modTime: raw.modTime,
             childCount: 0,
-            inode: raw.inode
+            entryCount: raw.entryCount,
+            inode: raw.inode,
+            dirMtime: raw.dirMtime
         )
 
         // Link as child of parent using the sibling-list pattern:
@@ -215,7 +245,8 @@ final class FileTree: @unchecked Sendable {
             fileType: .other,
             modTime: 0,
             childCount: 0,
-            inode: 0
+            inode: 0,
+            dirMtime: 0
         )
 
         // Link to grandparent
@@ -237,13 +268,22 @@ final class FileTree: @unchecked Sendable {
     /// ``finalizeBuild()``. Walks the tree bottom-up, summing child sizes
     /// into their parent directories.
     func aggregateSizes() {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        let count = nodes.count
+
+        // Reset directory sizes to zero before re-aggregating.
+        // This makes the method idempotent — safe to call multiple times
+        // (e.g., during incremental Phase 2 updates).
+        for i in 1..<count where nodes[i].isDirectory {
+            nodes[i].logicalSize = 0
+            nodes[i].physicalSize = 0
+        }
 
         // Process nodes in reverse order. Since children are always inserted
         // after their parents (or at higher indices due to post-order), iterating
         // backwards naturally processes children before parents.
-        let count = nodes.count
         for i in stride(from: count - 1, through: 1, by: -1) {
             let parentIdx = Int(nodes[i].parentIndex)
             guard parentIdx > 0, parentIdx < count else { continue }
@@ -253,13 +293,38 @@ final class FileTree: @unchecked Sendable {
         }
     }
 
+    /// Aggregates entry counts from leaf directories up to the root.
+    ///
+    /// Similar to ``aggregateSizes()``, walks the tree bottom-up summing
+    /// child entry counts into their parents. After aggregation, each
+    /// directory's `entryCount` represents the total number of entries
+    /// in its entire subtree (including its own direct entries).
+    ///
+    /// Used after Phase 1 (shallow scan) to make entry-count-based
+    /// visualization proportions meaningful.
+    func aggregateEntryCounts() {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        // NOTE: NOT idempotent. Must be called exactly once.
+        // Unlike sizes (where ground truth is on leaf files and dirs start at 0),
+        // entryCount ground truth is on directory nodes themselves (direct count
+        // from readdir). Zeroing would destroy it.
+        let count = nodes.count
+        for i in stride(from: count - 1, through: 1, by: -1) {
+            let parentIdx = Int(nodes[i].parentIndex)
+            guard parentIdx > 0, parentIdx < count else { continue }
+            nodes[parentIdx].entryCount &+= nodes[i].entryCount
+        }
+    }
+
     /// Finalizes the build phase, releasing the path index to reclaim memory.
     ///
     /// After this call, no further insertions are allowed and the tree
     /// becomes safe for concurrent reads.
     func finalizeBuild() {
-        lock.lock()
-        defer { lock.unlock() }
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
 
         pathIndex.removeAll()
         isFinalized = true
@@ -339,7 +404,8 @@ final class FileTree: @unchecked Sendable {
                 modificationDate: .distantPast,
                 childCount: 0,
                 depth: 0,
-                flags: []
+                flags: [],
+                dirMtime: 0
             )
         }
 
@@ -358,8 +424,10 @@ final class FileTree: @unchecked Sendable {
             fileType: node.fileType,
             modificationDate: node.modificationDate,
             childCount: node.childCount,
+            entryCount: node.entryCount,
             depth: depth,
-            flags: node.flags
+            flags: node.flags,
+            dirMtime: node.dirMtime
         )
     }
 
@@ -526,6 +594,88 @@ final class FileTree: @unchecked Sendable {
         nodes.count > 1 ? 1 : 0
     }
 
+    // MARK: - Entry Count Access
+
+    /// Returns the `readdir()` entry count for the directory at the given index.
+    ///
+    /// - Parameter index: The node index.
+    /// - Returns: The entry count, or 0 if the index is invalid.
+    func entryCount(of index: UInt32) -> UInt32 {
+        let i = Int(index)
+        guard i > 0, i < nodes.count else { return 0 }
+        return nodes[i].entryCount
+    }
+
+    /// Returns all directory node indices with their entry counts,
+    /// sorted by entry count descending (heaviest directories first).
+    ///
+    /// Used by ``DeepScanner`` to prioritize scanning of the largest directories.
+    ///
+    /// - Returns: Array of `(index, entryCount)` tuples for all directory nodes.
+    func allDirectoriesByEntryCount() -> [(index: UInt32, entryCount: UInt32)] {
+        var dirs: [(index: UInt32, entryCount: UInt32)] = []
+        dirs.reserveCapacity(nodes.count / 4) // rough estimate
+
+        for i in 1..<nodes.count {
+            if nodes[i].isDirectory && !nodes[i].isExcluded && !nodes[i].isRestricted {
+                dirs.append((UInt32(i), nodes[i].entryCount))
+            }
+        }
+
+        dirs.sort { $0.entryCount > $1.entryCount }
+        return dirs
+    }
+
+    // MARK: - Virtual Node Support
+
+    /// Inserts a virtual "Other" node as a child of the root for Smart Scan.
+    ///
+    /// The virtual node represents the aggregate size of unscanned directories
+    /// plus APFS overhead. It is displayed with special styling (hatched/muted)
+    /// and does not support drill-down or deletion.
+    ///
+    /// Must be called **after** ``aggregateSizes()`` and **before** ``finalizeBuild()``.
+    ///
+    /// - Parameter otherSize: The byte size attributed to unscanned directories and overhead.
+    /// - Returns: The index of the inserted virtual node, or `nil` if the tree has no root.
+    @discardableResult
+    func insertVirtualOtherNode(otherSize: UInt64) -> UInt32? {
+        let virtualPath = rootPath + "/[Other]"
+        let raw = RawFileNode(
+            name: "Other",
+            path: virtualPath,
+            logicalSize: otherSize,
+            physicalSize: otherSize,
+            flags: [.isDirectory, .isVirtual],
+            fileType: .other,
+            modTime: 0,
+            inode: 0,
+            depth: 1,
+            parentPath: rootPath
+        )
+        return insert(raw)
+    }
+
+    /// Updates the size of the virtual "Other" node.
+    ///
+    /// Used during auto-rescan to shrink the "Other" segment as more directories
+    /// are scanned incrementally. Finds the virtual node by scanning for the
+    /// ``FileNodeFlags/isVirtual`` flag and updates both logical and physical sizes.
+    ///
+    /// - Parameter newSize: The updated byte size for the virtual node.
+    func updateVirtualOtherSize(_ newSize: UInt64) {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        for i in 1..<nodes.count {
+            if nodes[i].flags.contains(.isVirtual) {
+                nodes[i].logicalSize = newSize
+                nodes[i].physicalSize = newSize
+                return
+            }
+        }
+    }
+
     // MARK: - Serialization Support
 
     /// Provides read-only access to the raw node array for binary serialization.
@@ -545,6 +695,154 @@ final class FileTree: @unchecked Sendable {
         self.pathIndex = [:]
         self.rootPath = rootPath
         self.isFinalized = true
+    }
+
+    // MARK: - WAL Patching
+
+    /// Rebuilds the ``pathIndex`` from existing nodes, enabling WAL patch operations.
+    ///
+    /// When a `FileTree` is deserialized from cache (via ``init(deserializedNodes:stringPool:rootPath:)``),
+    /// it is marked as `isFinalized = true` and `pathIndex` is empty. This method reconstructs the
+    /// path-to-index mapping by performing a BFS traversal from the root node, which is required
+    /// before calling ``applyWALPatch(dirPath:walNodes:walStringPoolData:)``.
+    ///
+    /// The traversal is O(n) — each node is visited exactly once.
+    ///
+    /// Must be called on a deserialized tree before applying WAL patches.
+    func prepareForPatching() {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        isFinalized = false
+        pathIndex = Dictionary(minimumCapacity: nodes.count)
+
+        guard nodes.count > 1 else { return }
+
+        // The root is at index 1. Its full path is rootPath.
+        pathIndex[rootPath] = 1
+
+        // BFS queue: (nodeIndex, fullPath)
+        var queue = [(index: UInt32, path: String)]()
+        queue.reserveCapacity(nodes.count)
+        queue.append((1, rootPath))
+
+        var head = 0
+        while head < queue.count {
+            let (parentIndex, parentPath) = queue[head]
+            head += 1
+
+            var childIdx = nodes[Int(parentIndex)].firstChildIndex
+            while childIdx != 0 && Int(childIdx) < nodes.count {
+                let childNode = nodes[Int(childIdx)]
+                let childName = stringPool.getString(
+                    offset: childNode.nameOffset,
+                    length: childNode.nameLength
+                )
+
+                let childPath = parentPath + "/" + childName
+                pathIndex[childPath] = childIdx
+                queue.append((childIdx, childPath))
+
+                childIdx = childNode.nextSiblingIndex
+            }
+        }
+    }
+
+    /// Applies a WAL patch: replaces the subtree of `dirPath` with nodes from the WAL entry.
+    ///
+    /// The WAL nodes reference names in their own string pool (provided as raw `Data`).
+    /// Each WAL node is converted to a ``RawFileNode`` and inserted via the standard
+    /// ``insertUnlocked(_:)`` path, which re-interns names into the tree's main ``StringPool``.
+    ///
+    /// Old children of the patched directory are unlinked (their `firstChildIndex` is zeroed).
+    /// The orphaned nodes remain in the arena and are cleaned up on the next blob compaction.
+    ///
+    /// - Parameters:
+    ///   - dirPath: The full path of the directory whose children should be replaced.
+    ///   - walNodes: The ``FileNode`` structs from the WAL entry.
+    ///   - walStringPoolData: Raw bytes of the ``StringPool`` for the WAL nodes.
+    func applyWALPatch(dirPath: String, walNodes: [FileNode], walStringPoolData: Data) {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        // 1. Find the directory in pathIndex
+        guard let dirIndex = pathIndex[dirPath] else {
+            print("[WALPatch] Directory not found in pathIndex: \(dirPath)")
+            return
+        }
+
+        let dirIdx = Int(dirIndex)
+        guard dirIdx > 0, dirIdx < nodes.count else {
+            print("[WALPatch] Invalid directory index \(dirIdx) for path: \(dirPath)")
+            return
+        }
+
+        // 2. Remove old children from pathIndex (before unlinking)
+        removeSubtreeFromPathIndex(at: dirIdx)
+
+        // 3. Unlink old children — orphaned nodes stay in arena
+        nodes[dirIdx].firstChildIndex = 0
+        nodes[dirIdx].childCount = 0
+
+        // 4. Insert new nodes from the WAL
+        let walPool = StringPool(deserializedFrom: walStringPoolData)
+
+        for walNode in walNodes {
+            // Resolve the node's name from the WAL StringPool
+            let name = walPool.getString(
+                offset: walNode.nameOffset,
+                length: walNode.nameLength
+            )
+
+            let childPath = dirPath + "/" + name
+
+            // Determine the parent path for this node.
+            // WAL nodes are stored flat — all are direct children of the patched directory.
+            // Their parentIndex values are meaningless in the main tree context.
+            let parentPath = dirPath
+
+            let raw = RawFileNode(
+                name: name,
+                path: childPath,
+                logicalSize: walNode.logicalSize,
+                physicalSize: walNode.physicalSize,
+                flags: walNode.flags,
+                fileType: walNode.fileType,
+                modTime: walNode.modTime,
+                inode: walNode.inode,
+                depth: 0, // depth is not used by insertUnlocked
+                parentPath: parentPath,
+                entryCount: walNode.entryCount,
+                dirMtime: walNode.dirMtime
+            )
+
+            insertUnlocked(raw)
+        }
+    }
+
+    /// Recursively removes all descendants of the node at `index` from ``pathIndex``.
+    ///
+    /// Walks the child linked list via `firstChildIndex` / `nextSiblingIndex` and
+    /// removes each descendant's full path from the path index. The node at `index`
+    /// itself is **not** removed — only its children and their subtrees.
+    ///
+    /// The caller **must** hold `_lock` before invoking this method.
+    ///
+    /// - Parameter index: The node index whose descendants should be removed from pathIndex.
+    private func removeSubtreeFromPathIndex(at index: Int) {
+        var childIdx = nodes[index].firstChildIndex
+        while childIdx != 0 && Int(childIdx) < nodes.count {
+            let childIndex = Int(childIdx)
+
+            // Recursively remove grandchildren first
+            removeSubtreeFromPathIndex(at: childIndex)
+
+            // Build the full path for this child and remove it from pathIndex
+            let childPath = fullPath(of: childIdx)
+            pathIndex.removeValue(forKey: childPath)
+
+            childIdx = nodes[childIndex].nextSiblingIndex
+        }
     }
 
     // MARK: - Subscript Access

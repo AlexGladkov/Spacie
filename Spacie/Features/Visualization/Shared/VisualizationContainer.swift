@@ -64,17 +64,25 @@ struct VisualizationContainer: View {
 
     // MARK: - Visualization Content
 
-    /// Renders the appropriate visualization based on the current mode.
+    /// Renders the appropriate visualization based on the current mode and phase.
+    ///
+    /// During Yellow phase (approximate data), shows a dedicated overview with
+    /// a donut chart and statistics instead of the regular sunburst/treemap.
     @ViewBuilder
     private func visualizationContent(tree: FileTree) -> some View {
-        switch visualizationMode {
-        case .sunburst:
-            SunburstView(tree: tree, state: state)
-                .id("sunburst-\(state.currentRootIndex)")
+        if state.useEntryCount {
+            // Yellow phase: show pie chart + stats overview
+            YellowPhaseOverview(tree: tree, scanState: scanState, state: state)
+        } else {
+            switch visualizationMode {
+            case .sunburst:
+                SunburstView(tree: tree, state: state)
+                    .id("sunburst-\(state.currentRootIndex)")
 
-        case .treemap:
-            TreemapView(tree: tree, state: state)
-                .id("treemap-\(state.currentRootIndex)")
+            case .treemap:
+                TreemapView(tree: tree, state: state)
+                    .id("treemap-\(state.currentRootIndex)")
+            }
         }
     }
 
@@ -129,7 +137,7 @@ struct VisualizationContainer: View {
                     .controlSize(.small)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Scanning...")
+                    Text(progress.phase == .yellow ? "Deep scanning..." : "Scanning...")
                         .font(.system(size: 11, weight: .medium))
 
                     Text(scanProgressText(progress))
@@ -138,9 +146,19 @@ struct VisualizationContainer: View {
                         .lineLimit(1)
                 }
 
+                if let coverage = progress.coveragePercent {
+                    Text("Coverage: \(Int(coverage * 100))%")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
 
-                if let percent = progress.estimatedProgress {
+                if progress.phase == .yellow, let deepProgress = progress.deepScanProgress {
+                    Text("\(Int(deepProgress * 100))%")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                } else if let percent = progress.estimatedProgress {
                     Text("\(Int(percent * 100))%")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -156,8 +174,17 @@ struct VisualizationContainer: View {
 
     /// Formats the scanning progress text with file count and current path.
     private func scanProgressText(_ progress: ScanProgress) -> String {
+        if progress.phase == .yellow {
+            let completed = progress.deepScanDirsCompleted
+            let total = progress.deepScanDirsTotal
+            let path = abbreviatedPath(progress.currentPath)
+            if total > 0 {
+                return "\(completed)/\(total) directories - \(path)"
+            }
+            return "Deep scan in progress - \(path)"
+        }
         let fileCount = progress.filesScanned.formattedCount
-        let size = progress.totalSizeScanned.formattedSizeShort
+        let size = progress.totalSizeScanned(for: sizeMode).formattedSizeShort
         let path = abbreviatedPath(progress.currentPath)
         return "\(fileCount) files, \(size) - \(path)"
     }
@@ -187,21 +214,29 @@ struct VisualizationContainer: View {
             Divider()
                 .frame(height: 12)
 
-            // Total size of current root
-            let rootSize = tree.size(of: state.currentRootIndex, mode: state.sizeMode)
-            infoItem(
-                icon: "internaldrive",
-                value: rootSize.formattedSize
-            )
+            // Total size or entry count of current root
+            if state.useEntryCount {
+                let entryCount = tree.entryCount(of: state.currentRootIndex)
+                infoItem(
+                    icon: "number",
+                    value: "\(entryCount.formatted()) items (approximate)"
+                )
+            } else {
+                let rootSize = tree.size(of: state.currentRootIndex, mode: state.sizeMode)
+                infoItem(
+                    icon: "internaldrive",
+                    value: rootSize.formattedSize
+                )
 
-            Divider()
-                .frame(height: 12)
+                Divider()
+                    .frame(height: 12)
 
-            // Size mode indicator
-            infoItem(
-                icon: sizeMode == .logical ? "ruler" : "cube",
-                value: sizeMode.displayName
-            )
+                // Size mode indicator
+                infoItem(
+                    icon: sizeMode == .logical ? "ruler" : "cube",
+                    value: sizeMode.displayName
+                )
+            }
 
             Spacer()
 
