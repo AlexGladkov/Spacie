@@ -152,29 +152,38 @@ struct InfoBarView: View {
     // MARK: - Scanning State
 
     private func scanningContent(progress: ScanProgress) -> some View {
-        HStack(spacing: 12) {
-            scanPhaseIndicator
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 12) {
+                scanPhaseIndicator
 
-            separator
-
-            if progress.phase == .red {
-                statLabel(icon: "folder", text: progress.directoriesScanned.formattedCount + " dirs")
-            } else {
-                statLabel(icon: "doc", text: progress.filesScanned.formattedCount + " files")
                 separator
-                statLabel(icon: "internaldrive", text: progress.totalPhysicalSizeScanned.formattedSize)
-            }
-            separator
-            statLabel(icon: "clock", text: progress.elapsedTime.formattedDuration)
 
-            if progress.skippedDirectories > 0 {
+                if progress.phase == .red {
+                    statLabel(icon: "folder", text: progress.directoriesScanned.formattedCount + " dirs")
+                } else {
+                    statLabel(icon: "doc", text: progress.filesScanned.formattedCount + " files")
+                    separator
+                    statLabel(icon: "internaldrive", text: progress.totalPhysicalSizeScanned.formattedSize)
+                }
                 separator
-                statLabel(icon: "eye.slash", text: progress.skippedDirectories.formattedCount + " skipped")
-                    .foregroundStyle(.orange)
-            }
+                statLabel(icon: "clock", text: liveElapsed(at: context.date).formattedDuration)
 
-            Spacer()
+                if progress.skippedDirectories > 0 {
+                    separator
+                    statLabel(icon: "eye.slash", text: progress.skippedDirectories.formattedCount + " skipped")
+                        .foregroundStyle(.orange)
+                }
+
+                Spacer()
+            }
         }
+    }
+
+    /// Computes wall-clock elapsed time from the scan start date.
+    /// Falls back to 0 if no scan is in progress.
+    private func liveElapsed(at now: Date) -> TimeInterval {
+        guard let start = viewModel.scanStartDate else { return 0 }
+        return now.timeIntervalSince(start)
     }
 
     // MARK: - Completed State

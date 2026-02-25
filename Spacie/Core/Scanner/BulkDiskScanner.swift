@@ -44,7 +44,9 @@ final class BulkDiskScanner: Sendable {
     func scan(configuration: ScanConfiguration) -> AsyncStream<ScanEvent> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let task = Task.detached(priority: .userInitiated) {
-                Self.performScan(configuration: configuration, continuation: continuation)
+                Self.performScan(configuration: configuration) { event in
+                    continuation.yield(event)
+                }
                 continuation.finish()
             }
             continuation.onTermination = { @Sendable _ in
@@ -72,7 +74,7 @@ final class BulkDiskScanner: Sendable {
 
     /// Size of the attribute buffer passed to `getattrlistbulk`.
     /// 256 KB accommodates hundreds of entries per call.
-    private static let bufferSize = 256 * 1024
+    static let bufferSize = 256 * 1024
 
     // vtype raw values from <sys/vnode.h> — avoid Swift bridging issues with C enums
     private static let vtypeReg: UInt32 = 1   // VREG
@@ -84,10 +86,20 @@ final class BulkDiskScanner: Sendable {
     /// Performs the actual file tree scan synchronously on the calling thread.
     ///
     /// This method is intentionally non-async to avoid unnecessary suspension points
-    /// in the hot loop. It runs on a detached task with `.userInitiated` priority.
-    private static func performScan(
+    /// in the hot loop. Can be called directly from DeepScanner workers with a
+    /// pre-allocated buffer to eliminate Task/AsyncStream overhead per directory.
+    ///
+    /// - Parameters:
+    ///   - configuration: Scan parameters.
+    ///   - externalBuffer: Optional pre-allocated buffer (must be at least `bufferSize` bytes).
+    ///     When provided, the caller owns the buffer and this method will NOT deallocate it.
+    ///     When nil, a buffer is allocated and deallocated internally.
+    ///   - emit: Callback invoked for each scan event. Must be safe to call from the
+    ///     current thread. For async consumers, wrap with `continuation.yield`.
+    static func performScan(
         configuration: ScanConfiguration,
-        continuation: AsyncStream<ScanEvent>.Continuation
+        externalBuffer: UnsafeMutableRawPointer? = nil,
+        emit: @Sendable @escaping (ScanEvent) -> Void
     ) {
         let rootPath = configuration.rootPath.path(percentEncoded: false)
 
@@ -137,12 +149,20 @@ final class BulkDiskScanner: Sendable {
             | attrgroup_t(ATTR_FILE_DATAALLOCSIZE)
         attrList.fileattr = fileAttrs
 
-        // --- Allocate reusable buffer ---
-        let buffer = UnsafeMutableRawPointer.allocate(
-            byteCount: bufferSize,
-            alignment: MemoryLayout<UInt64>.alignment
-        )
-        defer { buffer.deallocate() }
+        // --- Buffer: use external or allocate ---
+        let buffer: UnsafeMutableRawPointer
+        let ownsBuffer: Bool
+        if let ext = externalBuffer {
+            buffer = ext
+            ownsBuffer = false
+        } else {
+            buffer = UnsafeMutableRawPointer.allocate(
+                byteCount: bufferSize,
+                alignment: MemoryLayout<UInt64>.alignment
+            )
+            ownsBuffer = true
+        }
+        defer { if ownsBuffer { buffer.deallocate() } }
 
         // --- Explicit DFS stack ---
         var stack: [WorkItem] = []
@@ -176,7 +196,7 @@ final class BulkDiskScanner: Sendable {
                 let code = errno
                 if code == EACCES || code == EPERM {
                     restrictedDirectories &+= 1
-                    continuation.yield(.restricted(path: dirPath))
+                    emit(.restricted(path: dirPath))
 
                     let name = Self.basename(of: dirPath)
                     let rawNode = RawFileNode(
@@ -191,9 +211,9 @@ final class BulkDiskScanner: Sendable {
                         depth: depth,
                         parentPath: Self.parentPath(of: dirPath)
                     )
-                    continuation.yield(.fileFound(node: rawNode))
+                    emit(.fileFound(node: rawNode))
                 } else {
-                    continuation.yield(.error(
+                    emit(.error(
                         path: dirPath,
                         code: code,
                         message: String(cString: strerror(code))
@@ -208,13 +228,13 @@ final class BulkDiskScanner: Sendable {
                 if fstat(dirFD, &dirStat) == 0 && dirStat.st_dev != rootDev {
                     close(dirFD)
                     skippedDirectories &+= 1
-                    continuation.yield(.directorySkipped(path: dirPath, depth: depth))
+                    emit(.directorySkipped(path: dirPath, depth: depth))
                     continue
                 }
             }
 
             directoriesScanned &+= 1
-            continuation.yield(.directoryEntered(path: dirPath, depth: depth))
+            emit(.directoryEntered(path: dirPath, depth: depth))
 
             // --- Accumulated directory size ---
             var directoryTotalSize: UInt64 = 0
@@ -251,7 +271,7 @@ final class BulkDiskScanner: Sendable {
                         break
                     }
                     // Transient error — report and stop this directory
-                    continuation.yield(.error(
+                    emit(.error(
                         path: dirPath,
                         code: code,
                         message: String(cString: strerror(code))
@@ -431,8 +451,8 @@ final class BulkDiskScanner: Sendable {
                                 parentPath: dirPath,
                                 dirMtime: UInt64(modTimeSec)
                             )
-                            continuation.yield(.fileFound(node: rawNode))
-                            continuation.yield(.directorySkipped(
+                            emit(.fileFound(node: rawNode))
+                            emit(.directorySkipped(
                                 path: childPath,
                                 depth: childDepth
                             ))
@@ -459,8 +479,8 @@ final class BulkDiskScanner: Sendable {
                             parentPath: dirPath,
                             dirMtime: UInt64(modTimeSec)
                         )
-                        continuation.yield(.fileFound(node: rawNode))
-                        continuation.yield(.directoryEntered(
+                        emit(.fileFound(node: rawNode))
+                        emit(.directoryEntered(
                             path: childPath,
                             depth: childDepth
                         ))
@@ -492,7 +512,10 @@ final class BulkDiskScanner: Sendable {
                         batchCount &+= 1
 
                         let ext = Self.fileExtension(from: nameString)
-                        let fileType = FileType.from(extension: ext)
+                        var fileType = FileType.from(extension: ext)
+                        if fileType == .other {
+                            fileType = FileType.fromContext(path: childPath)
+                        }
 
                         let rawNode = RawFileNode(
                             name: nameString,
@@ -506,7 +529,7 @@ final class BulkDiskScanner: Sendable {
                             depth: childDepth,
                             parentPath: dirPath
                         )
-                        continuation.yield(.fileFound(node: rawNode))
+                        emit(.fileFound(node: rawNode))
 
                     case Self.vtypeLnk:
                         // Symbolic link
@@ -526,7 +549,7 @@ final class BulkDiskScanner: Sendable {
                             depth: childDepth,
                             parentPath: dirPath
                         )
-                        continuation.yield(.fileFound(node: rawNode))
+                        emit(.fileFound(node: rawNode))
 
                     default:
                         // Other object types (VBLK, VCHR, VFIFO, VSOCK, etc.) — skip
@@ -548,7 +571,7 @@ final class BulkDiskScanner: Sendable {
                                 totalElapsed.components.seconds
                             ) + Double(totalElapsed.components.attoseconds) / 1e18
 
-                            continuation.yield(.progress(ScanProgress(
+                            emit(.progress(ScanProgress(
                                 filesScanned: filesScanned,
                                 directoriesScanned: directoriesScanned,
                                 skippedDirectories: skippedDirectories,
@@ -605,7 +628,7 @@ final class BulkDiskScanner: Sendable {
                         case .completed(let stats):
                             statsBox.stats = stats
                         default:
-                            continuation.yield(event)
+                            emit(event)
                         }
                     }
                     semaphore.signal()
@@ -626,7 +649,7 @@ final class BulkDiskScanner: Sendable {
             }
 
             // --- Emit directory completion ---
-            continuation.yield(.directoryCompleted(
+            emit(.directoryCompleted(
                 path: dirPath,
                 totalSize: directoryTotalSize
             ))
@@ -654,7 +677,7 @@ final class BulkDiskScanner: Sendable {
                 parentPath: Self.parentPath(of: dirPath),
                 dirMtime: dirMtimeValue
             )
-            continuation.yield(.fileFound(node: dirNode))
+            emit(.fileFound(node: dirNode))
 
             // No subdirectory push — single-level scan only.
         }
@@ -664,7 +687,7 @@ final class BulkDiskScanner: Sendable {
         let durationSeconds = Double(totalDuration.components.seconds)
             + Double(totalDuration.components.attoseconds) / 1e18
 
-        continuation.yield(.completed(stats: ScanStats(
+        emit(.completed(stats: ScanStats(
             totalFiles: filesScanned,
             totalDirectories: directoriesScanned,
             totalLogicalSize: totalLogicalSize,

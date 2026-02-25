@@ -342,7 +342,9 @@ final class DeepScanner: Sendable {
                             exclusionRules: scopedExclusionRules
                         )
 
-                        // Use BulkDiskScanner for performance
+                        // Use BulkDiskScanner with async stream.
+                        // Each scan runs on its own Task.detached, providing proper
+                        // cooperative scheduling with the Swift concurrency runtime.
                         let scanner = BulkDiskScanner()
                         let scanStream = scanner.scan(configuration: scopedConfig)
 

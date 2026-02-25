@@ -222,7 +222,10 @@ final class DiskScanner: Sendable {
                 batchCount &+= 1
 
                 let ext = fileExtension(from: name)
-                let fileType = FileType.from(extension: ext)
+                var fileType = FileType.from(extension: ext)
+                if fileType == .other {
+                    fileType = FileType.fromContext(path: currentPath)
+                }
 
                 let rawNode = RawFileNode(
                     name: name,

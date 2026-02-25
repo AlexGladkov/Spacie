@@ -112,6 +112,10 @@ final class AppViewModel {
     /// Path entered by the user in the Go to Folder dialog.
     var goToFolderPath: String = ""
 
+    /// Wall-clock timestamp when the current scan started.
+    /// Used by the info bar for a live-updating elapsed timer.
+    var scanStartDate: Date?
+
     /// Timestamp of the last completed scan.
     var lastScanDate: Date?
 
@@ -493,6 +497,7 @@ final class AppViewModel {
     /// Runs the standard two-phase full scan with cache writing at lifecycle points.
     private func startFullScan(volume: VolumeInfo, configuration: ScanConfiguration) async {
         scanPhase = .red
+        scanStartDate = Date()
         scanState = .scanning(ScanProgress(
             filesScanned: 0,
             directoriesScanned: 0,
@@ -561,6 +566,7 @@ final class AppViewModel {
             guard let self else { return }
             if let stats = await self.orchestrator.startScan(configuration: configuration) {
                 self.scanState = .completed(stats)
+                self.scanStartDate = nil
                 self.lastScanDate = Date()
                 self.dataIsStale = false
                 self.scanPhase = .green
@@ -601,6 +607,7 @@ final class AppViewModel {
         cacheValidationTask?.cancel()
         cacheValidationTask = nil
         endScanActivity()
+        scanStartDate = nil
         if scanState.isScanning {
             scanState = .cancelled
             scanPhase = .red
@@ -822,12 +829,14 @@ struct ContentView: View {
                 Text("Scanning directory structure...")
                     .font(.headline)
 
-                HStack(spacing: 20) {
-                    Label(progress.directoriesScanned.formattedCount + " directories", systemImage: "folder")
-                    Label(progress.elapsedTime.formattedDuration, systemImage: "clock")
-                    if progress.skippedDirectories > 0 {
-                        Label(progress.skippedDirectories.formattedCount + " skipped", systemImage: "eye.slash")
-                            .foregroundStyle(.orange)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    HStack(spacing: 20) {
+                        Label(progress.directoriesScanned.formattedCount + " directories", systemImage: "folder")
+                        Label(scanElapsed(at: context.date).formattedDuration, systemImage: "clock")
+                        if progress.skippedDirectories > 0 {
+                            Label(progress.skippedDirectories.formattedCount + " skipped", systemImage: "eye.slash")
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
                 .font(.callout)
@@ -852,6 +861,12 @@ struct ContentView: View {
 
             InfoBarView(viewModel: viewModel)
         }
+    }
+
+    /// Wall-clock elapsed time since the scan started.
+    private func scanElapsed(at now: Date) -> TimeInterval {
+        guard let start = viewModel.scanStartDate else { return 0 }
+        return now.timeIntervalSince(start)
     }
 
     // MARK: - Results Screen

@@ -71,7 +71,8 @@ enum FileType: UInt8, Sendable, CaseIterable, Identifiable {
         // Audio
         case "mp3", "wav", "aac", "flac", "ogg", "wma", "m4a", "aiff", "opus",
              "mid", "midi", "ape", "wv", "caf", "dsf", "dff", "ac3", "dts",
-             "amr", "au", "ra", "spx", "mka", "pcm", "snd":
+             "amr", "au", "ra", "spx", "mka", "pcm", "snd",
+             "m4b", "m4p", "aax", "m4r":
             return .audio
         // Images — photos, RAW camera formats, design files
         case "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "svg",
@@ -96,7 +97,10 @@ enum FileType: UInt8, Sendable, CaseIterable, Identifiable {
         case "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "dmg", "iso", "pkg", "deb", "rpm",
              "tgz", "tbz2", "txz", "zst", "lz", "lzma", "lz4", "sz", "cab", "cpio",
              "jar", "war", "ear", "apk", "ipa", "whl", "egg", "gem", "crx",
-             "snap", "flatpak", "nupkg", "vsix":
+             "snap", "flatpak", "nupkg", "vsix",
+             // macOS disk images & VM formats
+             "sparseimage", "sparsebundle",
+             "vmdk", "qcow2", "vdi", "vhd", "vhdx", "ova", "ovf":
             return .archive
         // Code & development
         case "swift", "m", "h", "c", "cpp", "cc", "cxx", "hpp", "hxx",
@@ -138,11 +142,34 @@ enum FileType: UInt8, Sendable, CaseIterable, Identifiable {
              "car", "actool", "storedata", "mom", "momd", "omo",
              "strings", "stringsdict", "lproj",
              "data", "dat", "bin",
-             "ttf", "otf", "woff", "woff2", "ttc", "dfont":
+             "ttf", "otf", "woff", "woff2", "ttc", "dfont",
+             "metallib", "gpurc":
             return .system
         default:
             return .other
         }
+    }
+
+    /// Infers file type from path context when extension-based classification
+    /// returns `.other`. On macOS, many large files lack extensions — Mach-O
+    /// binaries in .app bundles, system executables, framework internals.
+    static func fromContext(path: String) -> FileType {
+        // Files inside package bundles → application
+        if path.contains(".app/") || path.contains(".framework/")
+            || path.contains(".bundle/") || path.contains(".plugin/")
+            || path.contains(".kext/") || path.contains(".xpc/")
+            || path.contains(".appex/") || path.contains(".prefpane/")
+            || path.contains(".saver/") || path.contains(".qlgenerator/")
+            || path.contains(".mdimporter/") {
+            return .application
+        }
+        // System binary/library paths → system
+        if path.hasPrefix("/usr/") || path.hasPrefix("/bin/")
+            || path.hasPrefix("/sbin/") || path.hasPrefix("/System/")
+            || path.hasPrefix("/Library/Apple/") {
+            return .system
+        }
+        return .other
     }
 }
 
