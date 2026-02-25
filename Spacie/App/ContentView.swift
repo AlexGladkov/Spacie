@@ -81,6 +81,11 @@ final class AppViewModel {
     /// The resulting file tree after a successful scan.
     var tree: FileTree?
 
+    /// Monotonically increasing counter bumped on every tree content mutation.
+    /// Views that depend on tree data should include this in their identity
+    /// or task keys so SwiftUI re-evaluates when the tree's internal state changes.
+    var treeVersion: Int = 0
+
     /// Whether sizes display logical or physical values.
     var sizeMode: SizeMode {
         didSet { UserDefaults.standard.set(sizeMode.rawValue, forKey: "defaultSizeMode") }
@@ -94,6 +99,9 @@ final class AppViewModel {
 
     /// Visualization navigation state shared with visualization views.
     var vizState: VisualizationState?
+
+    /// View model for the Large Files panel.
+    let largeFilesVM = LargeFilesViewModel()
 
     /// Whether the FDA banner should be displayed.
     var showFDABanner: Bool = false
@@ -161,6 +169,9 @@ final class AppViewModel {
     /// Background task for cache validation and auto-dismiss.
     private var cacheValidationTask: Task<Void, Never>?
 
+    /// Prevents App Nap from throttling the scan while in background.
+    private var scanActivity: NSObjectProtocol?
+
     // MARK: - Initialization
 
     init() {
@@ -197,6 +208,12 @@ final class AppViewModel {
 
         cancelScan()
 
+        // Prevent App Nap from throttling the scan when the window is not visible.
+        scanActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Disk scanning in progress"
+        )
+
         let configuration = ScanConfiguration(
             rootPath: volume.mountPoint,
             volumeId: volume.id
@@ -209,7 +226,10 @@ final class AppViewModel {
 
         if cache.cacheExists {
             let loaded = await attemptCacheLoad(cache: cache, configuration: configuration)
-            if loaded { return }
+            if loaded {
+                endScanActivity()
+                return
+            }
         }
 
         // No cache or cache load failed: run full scan
@@ -272,6 +292,7 @@ final class AppViewModel {
 
         // Display the cached tree immediately
         self.tree = cachedTree
+        self.treeVersion += 1
         self.scanPhase = .green
         self.scanState = .completed(ScanStats(
             totalFiles: UInt64(cachedTree.nodeCount),
@@ -323,6 +344,7 @@ final class AppViewModel {
                 if Task.isCancelled { return }
 
                 self.tree = cachedTree
+                self.treeVersion += 1
                 self.cacheStatus = .changesFound(
                     addedBytes: rescanResult.bytesChanged,
                     dirCount: rescanResult.directoriesRescanned
@@ -519,7 +541,16 @@ final class AppViewModel {
         }
 
         orchestrator.onTreeUpdate = { [weak self] tree in
-            self?.tree = tree
+            guard let self else { return }
+            self.tree = tree
+            self.treeVersion += 1
+            // During Phase 2 (yellow), switch from entry counts to actual sizes
+            // since the deep tree has real size data but no entry counts.
+            if self.scanPhase == .yellow, let vs = self.vizState, vs.useEntryCount {
+                vs.useEntryCount = false
+                // Reset navigation to root since deep tree indices differ from shallow tree
+                vs.navigateToRoot()
+            }
         }
 
         orchestrator.onRestricted = { [weak self] in
@@ -536,6 +567,7 @@ final class AppViewModel {
                 // Final tree swap to the fully accurate deep tree.
                 if let deepTree = self.orchestrator.deepTree {
                     self.tree = deepTree
+                    self.treeVersion += 1
 
                     // Step 10: Save cache after Phase 2 completion
                     if let cache = self.scanCache {
@@ -557,6 +589,7 @@ final class AppViewModel {
             } else if Task.isCancelled {
                 self.scanState = .cancelled
             }
+            self.endScanActivity()
         }
     }
 
@@ -567,9 +600,18 @@ final class AppViewModel {
         scanTask = nil
         cacheValidationTask?.cancel()
         cacheValidationTask = nil
+        endScanActivity()
         if scanState.isScanning {
             scanState = .cancelled
             scanPhase = .red
+        }
+    }
+
+    /// Ends the App Nap prevention activity token.
+    private func endScanActivity() {
+        if let activity = scanActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            scanActivity = nil
         }
     }
 
@@ -648,6 +690,7 @@ struct ContentView: View {
     @State private var viewModel = AppViewModel()
     @Environment(VolumeManager.self) private var volumeManager
     @Environment(PermissionManager.self) private var permissionManager
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -681,6 +724,16 @@ struct ContentView: View {
         }
         .sheet(isPresented: $viewModel.showGoToFolder) {
             goToFolderSheet
+        }
+        .task {
+            // Auto-start scan on boot volume when no volume is selected
+            try? await Task.sleep(for: .seconds(0.5))
+            if viewModel.volume == nil {
+                if let bootVol = volumeManager.volumes.first(where: { $0.isBoot }) {
+                    viewModel.volume = bootVol
+                    await viewModel.startScan()
+                }
+            }
         }
     }
 
@@ -807,6 +860,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Main panel
             panelContent
+                .id(viewModel.activePanel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // Info bar
@@ -822,7 +876,21 @@ struct ContentView: View {
         case .visualization:
             visualizationPlaceholder
         case .largeFiles:
-            placeholderPanel(name: "Large Files", icon: "doc.fill")
+            LargeFilesView(
+                viewModel: viewModel.largeFilesVM,
+                tree: viewModel.tree,
+                sizeMode: viewModel.sizeMode
+            )
+            .onAppear {
+                if let tree = viewModel.tree {
+                    viewModel.largeFilesVM.refresh(tree: tree, sizeMode: viewModel.sizeMode)
+                }
+            }
+            .onChange(of: viewModel.sizeMode) { _, newMode in
+                if let tree = viewModel.tree {
+                    viewModel.largeFilesVM.refresh(tree: tree, sizeMode: newMode)
+                }
+            }
         case .duplicates:
             placeholderPanel(name: "Duplicates", icon: "doc.on.doc.fill")
         case .smartCategories:
@@ -842,7 +910,8 @@ struct ContentView: View {
                 StorageBrowserView(
                     tree: tree,
                     state: vizState,
-                    sizeMode: viewModel.sizeMode
+                    sizeMode: viewModel.sizeMode,
+                    treeVersion: viewModel.treeVersion
                 )
             }
         } else {
@@ -981,6 +1050,29 @@ struct ContentView: View {
             TextField("Search...", text: $viewModel.searchQuery)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 160)
+        }
+
+        // Settings
+        ToolbarItem {
+            Menu {
+                Button("Open Settings...") {
+                    openSettings()
+                }
+
+                if let volume = viewModel.volume,
+                   ScanCache(volumeId: volume.id).cacheExists {
+                    Divider()
+                    Button("Clear Cache for \"\(volume.name)\"", role: .destructive) {
+                        let cache = ScanCache(volumeId: volume.id)
+                        cache.invalidate()
+                        viewModel.cacheStatus = .none
+                    }
+                }
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .menuIndicator(.hidden)
+            .help("Settings")
         }
     }
 

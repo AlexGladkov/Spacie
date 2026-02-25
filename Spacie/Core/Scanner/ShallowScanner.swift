@@ -327,8 +327,15 @@ final class ShallowScanner: Sendable {
 
     /// Returns the parent path by trimming the last path component.
     private static func parentPath(of path: String) -> String {
-        guard let lastSlash = path.lastIndex(of: "/") else { return "/" }
+        guard let lastSlash = path.lastIndex(of: "/") else { return "" }
         if lastSlash == path.startIndex {
+            // Path is "/" or "/something"
+            let afterSlash = path.index(after: lastSlash)
+            if afterSlash >= path.endIndex {
+                // Path is exactly "/" — root has no parent
+                return ""
+            }
+            // Path is "/something" — parent is "/"
             return "/"
         }
         return String(path[path.startIndex..<lastSlash])

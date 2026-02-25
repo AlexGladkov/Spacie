@@ -42,7 +42,7 @@ final class BulkDiskScanner: Sendable {
     /// - Parameter configuration: Scan parameters including root path, batch size, etc.
     /// - Returns: An asynchronous stream of scan events.
     func scan(configuration: ScanConfiguration) -> AsyncStream<ScanEvent> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(4096)) { continuation in
+        AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let task = Task.detached(priority: .userInitiated) {
                 Self.performScan(configuration: configuration, continuation: continuation)
                 continuation.finish()
@@ -691,8 +691,15 @@ final class BulkDiskScanner: Sendable {
 
     /// Returns the parent path by trimming the last path component.
     private static func parentPath(of path: String) -> String {
-        guard let lastSlash = path.lastIndex(of: "/") else { return "/" }
+        guard let lastSlash = path.lastIndex(of: "/") else { return "" }
         if lastSlash == path.startIndex {
+            // Path is "/" or "/something"
+            let afterSlash = path.index(after: lastSlash)
+            if afterSlash >= path.endIndex {
+                // Path is exactly "/" — root has no parent
+                return ""
+            }
+            // Path is "/something" — parent is "/"
             return "/"
         }
         return String(path[path.startIndex..<lastSlash])

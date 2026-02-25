@@ -138,6 +138,27 @@ final class FileTree: @unchecked Sendable {
     /// - Returns: The index of the newly inserted node, or `nil` if insertion failed.
     @discardableResult
     private func insertUnlocked(_ raw: RawFileNode) -> UInt32? {
+        // Deduplication: if a directory node already exists at this path,
+        // update its metadata instead of creating a duplicate.
+        // BulkDiskScanner emits each directory twice (once as a child of its
+        // parent, once as the root when the directory itself is scanned),
+        // so without this check the tree would contain duplicate nodes.
+        if let existingIdx = pathIndex[raw.path] {
+            let i = Int(existingIdx)
+            if i > 0 && i < nodes.count
+                && nodes[i].isDirectory && raw.flags.contains(.isDirectory)
+            {
+                // Update metadata on the existing directory node
+                if raw.dirMtime != 0 { nodes[i].dirMtime = raw.dirMtime }
+                if raw.inode != 0 { nodes[i].inode = raw.inode }
+                if raw.modTime != 0 { nodes[i].modTime = raw.modTime }
+                if raw.flags.contains(.isDeepScanned) {
+                    nodes[i].flags.insert(.isDeepScanned)
+                }
+                return existingIdx
+            }
+        }
+
         // Intern the name
         let (nameOffset, nameLength) = stringPool.append(raw.name)
 
@@ -207,8 +228,18 @@ final class FileTree: @unchecked Sendable {
 
         // Compute parent of this path
         let parentOfParent: String
-        if let lastSlash = path.lastIndex(of: "/"), lastSlash != path.startIndex {
-            parentOfParent = String(path[path.startIndex..<lastSlash])
+        if let lastSlash = path.lastIndex(of: "/") {
+            if lastSlash == path.startIndex {
+                if path.count > 1 {
+                    // Path is like "/Users" — parent is root "/"
+                    parentOfParent = "/"
+                } else {
+                    // Path is exactly "/" — root has no parent
+                    parentOfParent = ""
+                }
+            } else {
+                parentOfParent = String(path[path.startIndex..<lastSlash])
+            }
         } else {
             parentOfParent = ""
         }
@@ -223,7 +254,9 @@ final class FileTree: @unchecked Sendable {
 
         // Extract the directory name from the path
         let dirName: String
-        if let lastSlash = path.lastIndex(of: "/") {
+        if path == "/" {
+            dirName = "/"
+        } else if let lastSlash = path.lastIndex(of: "/") {
             dirName = String(path[path.index(after: lastSlash)...])
         } else {
             dirName = path
@@ -258,6 +291,11 @@ final class FileTree: @unchecked Sendable {
 
         nodes.append(placeholder)
         pathIndex[path] = newIndex
+
+        // If we just created the root placeholder, set rootPath
+        if grandparentIdx == 0 && path == "/" {
+            rootPath = "/"
+        }
 
         return newIndex
     }
@@ -316,6 +354,111 @@ final class FileTree: @unchecked Sendable {
             guard parentIdx > 0, parentIdx < count else { continue }
             nodes[parentIdx].entryCount &+= nodes[i].entryCount
         }
+    }
+
+    /// Diagnostic dump for debugging tree integrity issues.
+    /// Writes analysis to /tmp/spacie_tree_diagnostic.txt
+    func diagnosticDump() {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        var lines: [String] = []
+        func log(_ s: String) { lines.append(s) }
+
+        let count = nodes.count
+        var fileCount = 0
+        var dirCount = 0
+        var rawFileSizeSum: UInt64 = 0
+        var orphanCount = 0
+        var orphanSizeSum: UInt64 = 0
+        var rootChildrenSizeSum: UInt64 = 0
+
+        let rootIdx = rootIndex
+        let rootNode = rootIdx > 0 && Int(rootIdx) < count ? nodes[Int(rootIdx)] : nil
+        log("=== DIAGNOSTIC DUMP ===")
+        log("Total nodes (incl sentinel): \(count)")
+        log("Root index: \(rootIdx), rootPath: \(rootPath)")
+        if let r = rootNode {
+            log("Root logicalSize: \(r.logicalSize), childCount: \(r.childCount), firstChildIndex: \(r.firstChildIndex)")
+        }
+
+        for i in 1..<count {
+            let n = nodes[i]
+            if n.isDirectory {
+                dirCount += 1
+            } else {
+                fileCount += 1
+                rawFileSizeSum += n.logicalSize
+            }
+            let pi = Int(n.parentIndex)
+            if pi == 0 && UInt32(i) != rootIdx {
+                orphanCount += 1
+                orphanSizeSum += n.logicalSize
+            }
+        }
+
+        if let r = rootNode {
+            var childIdx = r.firstChildIndex
+            var childNum = 0
+            while childIdx != 0 && Int(childIdx) < count {
+                let child = nodes[Int(childIdx)]
+                rootChildrenSizeSum += child.logicalSize
+                childNum += 1
+                if childNum <= 15 {
+                    let cname = stringPool.getString(offset: child.nameOffset, length: child.nameLength)
+                    log("  Root child #\(childNum): idx=\(childIdx) name=\(cname) size=\(child.logicalSize) isDir=\(child.isDirectory) parentIdx=\(child.parentIndex)")
+                }
+                childIdx = child.nextSiblingIndex
+            }
+            log("Root linked children: \(childNum), their aggregated size sum: \(rootChildrenSizeSum)")
+        }
+
+        log("Files: \(fileCount), Dirs: \(dirCount)")
+        log("Raw file size sum (non-dir logicalSize): \(rawFileSizeSum) (\(rawFileSizeSum / (1024*1024*1024)) GB)")
+        log("Orphans (parentIndex==0, not root): \(orphanCount), orphan size sum: \(orphanSizeSum) (\(orphanSizeSum / (1024*1024*1024)) GB)")
+
+        var badParentCount = 0
+        for i in 1..<count {
+            let pi = Int(nodes[i].parentIndex)
+            if pi != 0 && (pi < 0 || pi >= count) {
+                badParentCount += 1
+            }
+        }
+        log("Nodes with out-of-bounds parentIndex: \(badParentCount)")
+
+        // Sample nodes with largest sizes that have parentIndex == 0 (orphans)
+        var orphanSamples: [(index: Int, size: UInt64, path: String)] = []
+        var indexToPath: [UInt32: String] = [:]
+        for (path, idx) in pathIndex {
+            indexToPath[idx] = path
+        }
+        for i in 1..<count {
+            let pi = Int(nodes[i].parentIndex)
+            if pi == 0 && UInt32(i) != rootIdx {
+                orphanSamples.append((i, nodes[i].logicalSize, indexToPath[UInt32(i)] ?? "<unknown>"))
+            }
+        }
+        orphanSamples.sort { $0.size > $1.size }
+        if !orphanSamples.isEmpty {
+            log("Top 20 orphans by size:")
+            for s in orphanSamples.prefix(20) {
+                let n = nodes[s.index]
+                log("  node[\(s.index)] path=\(s.path) size=\(s.size) isDir=\(n.isDirectory) flags=\(n.flags)")
+            }
+        }
+
+        log("=== END DIAGNOSTIC DUMP ===")
+
+        // Write to NSLog AND file
+        let output = lines.joined(separator: "\n")
+        for line in lines {
+            NSLog("[SPACIE_DIAG] %@", line)
+        }
+        // Also try multiple file locations
+        let homeDir = NSHomeDirectory()
+        let diagPath = homeDir + "/spacie_diagnostic.txt"
+        try? output.write(toFile: diagPath, atomically: true, encoding: .utf8)
+        NSLog("[SPACIE_DIAG] Written to %@", diagPath)
     }
 
     /// Finalizes the build phase, releasing the path index to reclaim memory.
@@ -454,6 +597,10 @@ final class FileTree: @unchecked Sendable {
         let first = components[0]
         if first.hasPrefix("/") {
             if components.count == 1 { return first }
+            // When root is exactly "/", avoid producing "//child"
+            if first == "/" {
+                return "/" + components.dropFirst().joined(separator: "/")
+            }
             return first + "/" + components.dropFirst().joined(separator: "/")
         }
 
@@ -640,7 +787,7 @@ final class FileTree: @unchecked Sendable {
     /// - Returns: The index of the inserted virtual node, or `nil` if the tree has no root.
     @discardableResult
     func insertVirtualOtherNode(otherSize: UInt64) -> UInt32? {
-        let virtualPath = rootPath + "/[Other]"
+        let virtualPath = rootPath == "/" ? "/[Other]" : rootPath + "/[Other]"
         let raw = RawFileNode(
             name: "Other",
             path: virtualPath,
@@ -739,7 +886,7 @@ final class FileTree: @unchecked Sendable {
                     length: childNode.nameLength
                 )
 
-                let childPath = parentPath + "/" + childName
+                let childPath = parentPath == "/" ? "/" + childName : parentPath + "/" + childName
                 pathIndex[childPath] = childIdx
                 queue.append((childIdx, childPath))
 
@@ -794,7 +941,7 @@ final class FileTree: @unchecked Sendable {
                 length: walNode.nameLength
             )
 
-            let childPath = dirPath + "/" + name
+            let childPath = dirPath == "/" ? "/" + name : dirPath + "/" + name
 
             // Determine the parent path for this node.
             // WAL nodes are stored flat — all are direct children of the patched directory.

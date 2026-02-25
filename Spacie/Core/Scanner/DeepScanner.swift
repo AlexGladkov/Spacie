@@ -264,7 +264,7 @@ final class DeepScanner: Sendable {
         estimatedUsedSpace: UInt64,
         smartScanTier1Paths: Set<String>?
     ) -> AsyncStream<DeepScanEvent> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(4096)) { continuation in
+        AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let task = Task.detached(priority: .userInitiated) {
                 await Self.performDeepScan(
                     directories: directories,

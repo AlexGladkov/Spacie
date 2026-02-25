@@ -44,7 +44,7 @@ final class ScanCache: @unchecked Sendable {
     private static let magic: [UInt8] = [0x53, 0x50, 0x43, 0x45] // "SPCE"
 
     /// Current binary format version. Increment on breaking changes.
-    private static let formatVersion: UInt32 = 2
+    private static let formatVersion: UInt32 = 3
 
     /// Public accessor for the current format version.
     ///

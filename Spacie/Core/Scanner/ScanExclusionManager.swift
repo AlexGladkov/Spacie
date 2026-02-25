@@ -78,6 +78,17 @@ enum ScanExclusionManager {
     static let defaultPathPrefixes: [String] = {
         let home = NSHomeDirectory()
         return [
+            // APFS firmlink volumes — content under /System/Volumes/Data is
+            // already accessible via firmlinks at /. Scanning both paths
+            // double-counts every file on the Data volume.
+            "/System/Volumes/Data",
+            "/System/Volumes/VM",
+            "/System/Volumes/Preboot",
+            "/System/Volumes/Update",
+            "/System/Volumes/xarts",
+            "/System/Volumes/iSCPreboot",
+            "/System/Volumes/Hardware",
+
             "\(home)/Library/Caches",
             "\(home)/Library/Developer/CoreSimulator",
             "\(home)/Library/Developer/Xcode/DerivedData",

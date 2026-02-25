@@ -26,10 +26,12 @@ struct StorageBrowserView: View {
     let tree: FileTree
     @Bindable var state: VisualizationState
     let sizeMode: SizeMode
+    /// Monotonic version counter from AppViewModel — forces re-render when tree data changes.
+    var treeVersion: Int = 0
 
     var body: some View {
         HStack(spacing: 0) {
-            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode)
+            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, treeVersion: treeVersion)
 
             Divider()
 
@@ -37,7 +39,8 @@ struct StorageBrowserView: View {
                 tree: tree,
                 rootIndex: state.currentRootIndex,
                 sizeMode: sizeMode,
-                useEntryCount: state.useEntryCount
+                useEntryCount: state.useEntryCount,
+                treeVersion: treeVersion
             )
             .frame(width: 320)
         }
@@ -52,10 +55,14 @@ private struct FolderListPanel: View {
     let tree: FileTree
     @Bindable var state: VisualizationState
     let sizeMode: SizeMode
+    var treeVersion: Int = 0
 
     private var useEntryCount: Bool { state.useEntryCount }
 
     var body: some View {
+        // treeVersion is included in the closure capture so SwiftUI
+        // re-evaluates body when the tree's internal data changes.
+        let _ = treeVersion
         let children = sortedChildren()
         let parentValue = computeParentValue()
 
@@ -180,6 +187,7 @@ private struct FileTypePanel: View {
     let rootIndex: UInt32
     let sizeMode: SizeMode
     let useEntryCount: Bool
+    var treeVersion: Int = 0
 
     @State private var distribution: [TypeEntry] = []
 
@@ -209,7 +217,7 @@ private struct FileTypePanel: View {
     }
 
     private var distributionTaskKey: String {
-        "\(rootIndex)-\(sizeMode.rawValue)-\(useEntryCount)-\(tree.size(of: rootIndex, mode: sizeMode))"
+        "\(rootIndex)-\(sizeMode.rawValue)-\(useEntryCount)-\(treeVersion)"
     }
 
     // MARK: - Donut Chart

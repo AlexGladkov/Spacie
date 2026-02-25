@@ -409,17 +409,18 @@ final class ScanOrchestrator {
             case .directoryCompleted(let path, let dirIndex, _):
                 lastCompletedDirIndex = dirIndex
 
-                // Aggregate sizes after each directory completes
-                tree.aggregateSizes()
-
-                // Record directory size for cache
-                directorySizeMap[path] = tree.logicalSize(of: tree.rootIndex)
-
-                // Throttle tree update callbacks to max 1 per 2 seconds
+                // Throttle tree update callbacks to max 1 per 2 seconds.
+                // IMPORTANT: aggregateSizes() is O(N) and must NOT be called
+                // after every directory — doing so blocks the consumer, causing
+                // the AsyncStream buffer to overflow and drop fileFound events.
+                // Instead, aggregate only before UI updates (throttled) and at
+                // the very end.
                 let now = ContinuousClock.now
                 let elapsed = now - lastTreeUpdateTime
                 if elapsed >= .seconds(Self.treeUpdateThrottleInterval) {
                     lastTreeUpdateTime = now
+                    tree.aggregateSizes()
+                    directorySizeMap[path] = tree.logicalSize(of: tree.rootIndex)
                     await MainActor.run {
                         self.onTreeUpdate?(tree)
                     }
@@ -495,6 +496,7 @@ final class ScanOrchestrator {
 
         // Full scan completed (no threshold reached)
         tree.aggregateSizes()
+        tree.diagnosticDump()
         tree.finalizeBuild()
 
         // Save directory sizes to cache for future smart scan prioritization

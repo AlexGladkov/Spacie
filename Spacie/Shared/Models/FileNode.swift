@@ -63,24 +63,82 @@ enum FileType: UInt8, Sendable, CaseIterable, Identifiable {
 
     static func from(extension ext: String) -> FileType {
         switch ext.lowercased() {
-        case "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts":
+        // Video
+        case "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpg", "mpeg",
+             "3gp", "3g2", "mts", "m2ts", "vob", "ogv", "rm", "rmvb", "f4v", "mxf",
+             "r3d", "asf", "dv", "divx", "ts":
             return .video
-        case "mp3", "wav", "aac", "flac", "ogg", "wma", "m4a", "aiff", "opus":
+        // Audio
+        case "mp3", "wav", "aac", "flac", "ogg", "wma", "m4a", "aiff", "opus",
+             "mid", "midi", "ape", "wv", "caf", "dsf", "dff", "ac3", "dts",
+             "amr", "au", "ra", "spx", "mka", "pcm", "snd":
             return .audio
-        case "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "svg", "heic", "heif", "raw", "cr2", "nef", "ico", "psd":
+        // Images — photos, RAW camera formats, design files
+        case "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "svg",
+             "heic", "heif", "raw", "ico", "psd",
+             "avif", "jxl", "jp2", "jfif",
+             // Camera RAW
+             "cr2", "cr3", "nef", "nrw", "dng", "arw", "orf", "rw2", "raf",
+             "pef", "x3f", "3fr", "srw", "rwl", "kdc", "dcr", "mrw", "erf",
+             // Design & illustration
+             "ai", "eps", "indd", "xcf", "sketch", "afdesign", "afphoto",
+             // HDR & specialized
+             "exr", "hdr", "tga", "dds", "icns", "cur", "pbm", "pgm", "ppm":
             return .image
-        case "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "pages", "numbers", "keynote", "odt", "ods", "csv":
+        // Documents
+        case "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf",
+             "pages", "numbers", "keynote", "odt", "ods", "odp", "csv",
+             "epub", "mobi", "azw", "azw3", "djvu", "fb2", "cbr", "cbz",
+             "md", "tex", "rst", "org", "wps", "wpd",
+             "ics", "vcf", "eml", "msg", "mbox":
             return .document
-        case "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "dmg", "iso", "pkg", "deb", "rpm":
+        // Archives
+        case "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "dmg", "iso", "pkg", "deb", "rpm",
+             "tgz", "tbz2", "txz", "zst", "lz", "lzma", "lz4", "sz", "cab", "cpio",
+             "jar", "war", "ear", "apk", "ipa", "whl", "egg", "gem", "crx",
+             "snap", "flatpak", "nupkg", "vsix":
             return .archive
-        case "swift", "m", "h", "c", "cpp", "py", "js", "ts", "java", "kt", "rs", "go", "rb",
-             "html", "css", "json", "xml", "yaml", "yml", "toml", "sh", "zsh", "bash",
-             "sql", "r", "lua", "dart", "scala", "php", "pl", "ex", "exs", "hs",
-             "xcodeproj", "xcworkspace", "pbxproj", "storyboard", "xib", "nib":
+        // Code & development
+        case "swift", "m", "h", "c", "cpp", "cc", "cxx", "hpp", "hxx",
+             "py", "pyw", "pyx", "pxd",
+             "js", "mjs", "cjs", "jsx", "tsx",
+             "java", "kt", "kts", "rs", "go", "rb", "erb",
+             "html", "htm", "css", "scss", "sass", "less", "styl",
+             "json", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf",
+             "sh", "zsh", "bash", "fish", "ps1", "psm1", "bat", "cmd",
+             "sql", "r", "lua", "dart", "scala", "php", "pl", "pm",
+             "ex", "exs", "hs", "lhs", "ml", "mli", "fs", "fsx", "fsi",
+             "clj", "cljs", "cljc", "edn", "elm", "purs",
+             "zig", "nim", "v", "cr", "jl", "groovy", "gradle",
+             "vue", "svelte", "graphql", "gql", "proto",
+             "tf", "hcl", "cmake", "makefile", "mk",
+             "dockerfile", "vagrantfile",
+             "ipynb", "wasm", "wat", "map",
+             "xcodeproj", "xcworkspace", "pbxproj", "storyboard", "xib", "nib",
+             "lock", "editorconfig", "gitignore", "gitattributes",
+             "env", "properties", "sbt", "cabal", "podspec",
+             "gemspec", "csproj", "sln", "vcxproj",
+             "o", "a", "d", "hmap", "modulemap", "swiftmodule", "swiftdoc",
+             "class", "pyc", "pyo", "elc", "beam":
             return .code
-        case "app", "framework", "dylib", "so", "bundle", "plugin", "kext", "prefpane":
+        // Applications & frameworks
+        case "app", "framework", "dylib", "so", "dll", "exe", "msi",
+             "bundle", "plugin", "kext", "prefpane",
+             "xpc", "appex", "qlgenerator", "mdimporter", "saver",
+             "action", "workflow", "shortcut",
+             "vst", "vst3", "component", "audiounit":
             return .application
-        case "plist", "log", "crash", "ips", "db", "sqlite", "realm":
+        // System & configuration
+        case "plist", "log", "crash", "ips",
+             "db", "sqlite", "sqlite3", "realm",
+             "wal", "shm", "journal",
+             "cache", "tmp", "temp", "bak", "old", "orig", "swp",
+             "keychain", "provisionprofile", "mobileprovision",
+             "cer", "crt", "pem", "key", "p12", "pfx",
+             "car", "actool", "storedata", "mom", "momd", "omo",
+             "strings", "stringsdict", "lproj",
+             "data", "dat", "bin",
+             "ttf", "otf", "woff", "woff2", "ttc", "dfont":
             return .system
         default:
             return .other
