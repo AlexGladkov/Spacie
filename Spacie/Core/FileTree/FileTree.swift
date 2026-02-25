@@ -671,7 +671,7 @@ final class FileTree: @unchecked Sendable {
         // For large trees, a min-heap of size `count` would be optimal,
         // but the constant factor of Array.sort on ~1M elements is acceptable.
         var candidates = [(index: UInt32, size: UInt64)]()
-        candidates.reserveCapacity(min(count * 2, nodes.count))
+        candidates.reserveCapacity(min(count, nodes.count / 2, 1_000_000))
 
         let threshold = minSize ?? 0
 
