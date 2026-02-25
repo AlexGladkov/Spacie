@@ -26,12 +26,13 @@ struct StorageBrowserView: View {
     let tree: FileTree
     @Bindable var state: VisualizationState
     let sizeMode: SizeMode
+    var scanPhase: ScanPhase = .red
     /// Monotonic version counter from AppViewModel — forces re-render when tree data changes.
     var treeVersion: Int = 0
 
     var body: some View {
         HStack(spacing: 0) {
-            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, treeVersion: treeVersion)
+            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, scanPhase: scanPhase, treeVersion: treeVersion)
 
             Divider()
 
@@ -55,7 +56,13 @@ private struct FolderListPanel: View {
     let tree: FileTree
     @Bindable var state: VisualizationState
     let sizeMode: SizeMode
+    var scanPhase: ScanPhase = .red
     var treeVersion: Int = 0
+
+    @State private var trashTargetIndex: UInt32?
+    @State private var showTrashConfirmation = false
+    @State private var trashError: String?
+    @State private var showTrashError = false
 
     private var useEntryCount: Bool { state.useEntryCount }
 
@@ -94,11 +101,41 @@ private struct FolderListPanel: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(path, forType: .string)
                     }
+
+                    let node = tree[index]
+                    if !node.isVirtual && (scanPhase == .green || scanPhase == .smartGreen) {
+                        Divider()
+                        Button("Move to Trash", role: .destructive) {
+                            trashTargetIndex = index
+                            showTrashConfirmation = true
+                        }
+                    }
                 }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .alert("Move to Trash?", isPresented: $showTrashConfirmation) {
+            Button("Cancel", role: .cancel) {
+                trashTargetIndex = nil
+            }
+            Button("Move to Trash", role: .destructive) {
+                if let idx = trashTargetIndex {
+                    performTrash(index: idx)
+                }
+            }
+        } message: {
+            if let idx = trashTargetIndex {
+                Text("\u{201C}\(tree.name(of: idx))\u{201D} will be moved to Trash. You can restore it from Trash if needed.")
+            }
+        }
+        .alert("Error", isPresented: $showTrashError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let error = trashError {
+                Text(error)
+            }
+        }
     }
 
     private func sortedChildren() -> [UInt32] {
@@ -121,6 +158,21 @@ private struct FolderListPanel: View {
     private func revealInFinder(index: UInt32) {
         let path = tree.fullPath(of: index)
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    private func performTrash(index: UInt32) {
+        let path = tree.fullPath(of: index)
+        let url = URL(fileURLWithPath: path)
+        Task {
+            do {
+                let manager = TrashManager()
+                _ = try await manager.moveToTrash(url: url)
+            } catch {
+                trashError = error.localizedDescription
+                showTrashError = true
+            }
+        }
+        trashTargetIndex = nil
     }
 }
 

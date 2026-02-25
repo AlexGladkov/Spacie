@@ -220,7 +220,8 @@ final class AppViewModel {
 
         let configuration = ScanConfiguration(
             rootPath: volume.mountPoint,
-            volumeId: volume.id
+            volumeId: volume.id,
+            crossMountPoints: volume.isBoot
         )
 
         // Try the incremental cache path first
@@ -926,6 +927,7 @@ struct ContentView: View {
                     tree: tree,
                     state: vizState,
                     sizeMode: viewModel.sizeMode,
+                    scanPhase: viewModel.scanPhase,
                     treeVersion: viewModel.treeVersion
                 )
             }
