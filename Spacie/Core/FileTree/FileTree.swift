@@ -1000,7 +1000,9 @@ final class FileTree: @unchecked Sendable {
     /// - Returns: The ``FileNode`` at that index.
     /// - Note: Index 0 is the sentinel. Valid tree nodes start at index 1.
     subscript(_ index: UInt32) -> FileNode {
-        nodes[Int(index)]
+        let i = Int(index)
+        guard i >= 0, i < nodes.count else { return nodes[0] }
+        return nodes[i]
     }
 
     // MARK: - Size by Mode
