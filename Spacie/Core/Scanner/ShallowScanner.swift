@@ -243,7 +243,7 @@ final class ShallowScanner: Sendable {
             // --- Emit directory node with entry count ---
             var flags: FileNodeFlags = [.isDirectory]
             if item.isHidden { flags.insert(.isHidden) }
-            if isPackageExtension(item.name) { flags.insert(.isPackage) }
+            if item.name.isPackageDirectory { flags.insert(.isPackage) }
 
             // Root node (depth 0) gets empty parentPath so FileTree places it at index 1
             let parentPathValue = depth == 0 ? "" : parentPath(of: path)
@@ -254,7 +254,7 @@ final class ShallowScanner: Sendable {
                 logicalSize: 0,
                 physicalSize: 0,
                 flags: flags,
-                fileType: isPackageExtension(item.name) ? .application : .other,
+                fileType: item.name.isPackageDirectory ? .application : .other,
                 modTime: statOK ? UInt32(truncatingIfNeeded: st.st_mtimespec.tv_sec) : 0,
                 inode: statOK ? st.st_ino : 0,
                 depth: depth,
@@ -341,19 +341,4 @@ final class ShallowScanner: Sendable {
         return String(path[path.startIndex..<lastSlash])
     }
 
-    /// Determines whether a name represents a macOS package directory.
-    private static func isPackageExtension(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        return lowered.hasSuffix(".app")
-            || lowered.hasSuffix(".framework")
-            || lowered.hasSuffix(".bundle")
-            || lowered.hasSuffix(".plugin")
-            || lowered.hasSuffix(".kext")
-            || lowered.hasSuffix(".prefpane")
-            || lowered.hasSuffix(".xpc")
-            || lowered.hasSuffix(".qlgenerator")
-            || lowered.hasSuffix(".mdimporter")
-            || lowered.hasSuffix(".appex")
-            || lowered.hasSuffix(".saver")
-    }
 }

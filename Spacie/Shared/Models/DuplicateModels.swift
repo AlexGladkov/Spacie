@@ -72,7 +72,9 @@ enum DuplicateScanState: Sendable, Equatable {
         case (.idle, .idle): true
         case (.groupingBySize, .groupingBySize): true
         case (.computingPartialHash(let a), .computingPartialHash(let b)): a == b
+        case (.computingFullHash(let ag, let ap), .computingFullHash(let bg, let bp)): ag == bg && ap == bp
         case (.completed(let a), .completed(let b)): a == b
+        case (.error(let a), .error(let b)): a == b
         default: false
         }
     }

@@ -104,10 +104,13 @@ enum ScanExclusionManager {
         return home.appendingPathComponent(".spacie/scan-exclusions.txt")
     }()
 
+    nonisolated(unsafe) private static var _lock = os_unfair_lock()
     nonisolated(unsafe) private static var _userExclusions: [String] = []
     nonisolated(unsafe) private static var _loaded = false
 
     static var userExclusions: [String] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         if !_loaded {
             _loaded = true
             _userExclusions = loadUserExclusions()
@@ -165,7 +168,9 @@ enum ScanExclusionManager {
             + "# Lines starting with / or ~ are path prefixes; others are directory basenames\n"
             + patterns.joined(separator: "\n") + "\n"
         try content.write(to: exclusionsFileURL, atomically: true, encoding: .utf8)
+        os_unfair_lock_lock(&_lock)
         _userExclusions = patterns
+        os_unfair_lock_unlock(&_lock)
     }
 
     static func addExclusion(_ pattern: String) throws {

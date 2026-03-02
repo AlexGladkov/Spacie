@@ -64,15 +64,19 @@ private struct FolderListPanel: View {
     @State private var trashError: String?
     @State private var showTrashError = false
 
+    /// Stable snapshot of children — updated asynchronously so NSTableView
+    /// never sees a mid-render data source change (which causes a crash
+    /// when a context menu is open during a tree update).
+    @State private var children: [UInt32] = []
+    @State private var parentValue: UInt64 = 0
+
     private var useEntryCount: Bool { state.useEntryCount }
 
-    var body: some View {
-        // treeVersion is included in the closure capture so SwiftUI
-        // re-evaluates body when the tree's internal data changes.
-        let _ = treeVersion
-        let children = sortedChildren()
-        let parentValue = computeParentValue()
+    private var dataKey: String {
+        "\(state.currentRootIndex)-\(treeVersion)-\(useEntryCount)-\(sizeMode.rawValue)"
+    }
 
+    var body: some View {
         List {
             ForEach(children, id: \.self) { index in
                 FolderRow(
@@ -113,6 +117,7 @@ private struct FolderListPanel: View {
                 }
             }
         }
+        .id(treeVersion)
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .alert("Move to Trash?", isPresented: $showTrashConfirmation) {
@@ -135,6 +140,10 @@ private struct FolderListPanel: View {
             if let error = trashError {
                 Text(error)
             }
+        }
+        .task(id: dataKey) {
+            children = sortedChildren()
+            parentValue = computeParentValue()
         }
     }
 

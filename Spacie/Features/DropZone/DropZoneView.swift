@@ -432,14 +432,11 @@ struct DropZoneView: View {
     // MARK: Drop Handling
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        var didAdd = false
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
                 DispatchQueue.main.async {
-                    if viewModel.addItem(from: url) {
-                        didAdd = true
-                    }
+                    viewModel.addItem(from: url)
                 }
             }
         }

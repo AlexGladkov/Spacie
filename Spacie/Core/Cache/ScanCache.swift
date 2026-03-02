@@ -90,7 +90,7 @@ final class ScanCache: @unchecked Sendable {
         let cachesDirectory = FileManager.default.urls(
             for: .cachesDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
 
         let cacheDir = cachesDirectory
             .appendingPathComponent(cacheDirectoryName, isDirectory: true)
@@ -292,9 +292,9 @@ final class ScanCache: @unchecked Sendable {
 
     /// The WAL (Write-Ahead Log) companion for incremental cache updates.
     ///
-    /// Lazily initialized on first access. Stores per-directory rescan results
-    /// as append-only binary entries that can be replayed on top of the base blob.
-    private(set) lazy var wal: ScanCacheWAL = ScanCacheWAL(volumeId: volumeId)
+    /// Stores per-directory rescan results as append-only binary entries
+    /// that can be replayed on top of the base blob.
+    private(set) var wal: ScanCacheWAL
 
     /// The file URL for the WAL companion file.
     var walFileURL: URL { ScanCacheWAL.walFileURL(for: volumeId) }
@@ -306,6 +306,7 @@ final class ScanCache: @unchecked Sendable {
     /// - Parameter volumeId: The unique identifier (UUID) of the volume.
     init(volumeId: String) {
         self.volumeId = volumeId
+        self.wal = ScanCacheWAL(volumeId: volumeId)
     }
 
     deinit {

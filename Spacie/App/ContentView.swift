@@ -991,6 +991,7 @@ struct ContentView: View {
         if let tree = viewModel.tree, let vizState = viewModel.vizState {
             // Linear search for the node matching the requested path.
             // FileTree does not expose a path-based index, so we iterate nodes.
+            guard tree.nodeCount > 0 else { return }
             for i in 1...UInt32(tree.nodeCount) {
                 if tree.fullPath(of: i) == path {
                     vizState.drillDown(to: i)

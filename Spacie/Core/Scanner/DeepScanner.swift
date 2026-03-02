@@ -45,6 +45,13 @@ final class ParallelScanState: @unchecked Sendable {
     let estimatedUsedSpace: UInt64
     private(set) var thresholdReached = false
 
+    /// Thread-safe read of thresholdReached under the lock.
+    var isThresholdReached: Bool {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return thresholdReached
+    }
+
     // Aggregate counters
     private(set) var totalFilesScanned: UInt64 = 0
     private(set) var totalDirsScanned: UInt64 = 0
@@ -350,7 +357,7 @@ final class DeepScanner: Sendable {
 
                         for await event in scanStream {
                             if Task.isCancelled { break }
-                            if state.thresholdReached { break }
+                            if state.isThresholdReached { break }
 
                             switch event {
                             case .fileFound(let node):
@@ -451,7 +458,7 @@ final class DeepScanner: Sendable {
                         }
 
                         // If threshold reached, stop this worker
-                        if state.thresholdReached { break }
+                        if state.isThresholdReached { break }
                     }
                 }
             }

@@ -73,33 +73,38 @@ final class OldFilesViewModel {
         files.filter { selectedFiles.contains($0.id) }
     }
 
-    // MARK: Actions
+    // MARK: Refresh
+
+    private var refreshTask: Task<Void, Never>?
 
     func refresh(tree: FileTree) {
+        refreshTask?.cancel()
         isRefreshing = true
-        defer { isRefreshing = false }
 
         let cutoff = Date().addingTimeInterval(-ageThreshold)
-        var result: [FileNodeInfo] = []
 
-        for i in 0..<UInt32(tree.nodeCount) {
-            let node = tree[i]
-            // Skip directories and symlinks
-            guard !node.isDirectory, !node.isSymlink else { continue }
-            // Skip zero-size files
-            guard node.logicalSize > 0 else { continue }
+        refreshTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                var found: [FileNodeInfo] = []
+                let count = tree.nodeCount
+                guard count > 0 else { return found }
+                for i in UInt32(1)...UInt32(count) {
+                    let node = tree[i]
+                    guard !node.isDirectory, !node.isSymlink, node.logicalSize > 0 else { continue }
+                    if node.modificationDate < cutoff {
+                        found.append(tree.nodeInfo(at: i))
+                    }
+                }
+                return found
+            }.value
 
-            let modDate = node.modificationDate
-            if modDate < cutoff {
-                result.append(tree.nodeInfo(at: i))
-            }
+            guard !Task.isCancelled else { return }
+
+            self.files = result
+            let validIds = Set(result.map(\.id))
+            self.selectedFiles = self.selectedFiles.intersection(validIds)
+            self.isRefreshing = false
         }
-
-        files = result
-
-        // Clear stale selections
-        let validIds = Set(files.map(\.id))
-        selectedFiles = selectedFiles.intersection(validIds)
     }
 
     func setAgePreset(_ preset: AgePreset, tree: FileTree?) {

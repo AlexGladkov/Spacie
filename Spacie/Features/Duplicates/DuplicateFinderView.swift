@@ -59,9 +59,7 @@ final class DuplicateFinderViewModel {
     func startScan(tree: FileTree) async {
         cancelScan()
 
-        scanTask = Task { [weak self] in
-            guard let self else { return }
-
+        scanTask = Task {
             let stream = await engine.findDuplicates(in: tree)
 
             for await event in stream {

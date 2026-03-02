@@ -70,4 +70,21 @@ extension String {
     var shellEscaped: String {
         "'" + replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
+
+    /// Returns true if this filename represents a macOS package directory
+    /// (.app, .framework, .bundle, etc.) that should be treated as opaque.
+    var isPackageDirectory: Bool {
+        let lowered = lowercased()
+        return lowered.hasSuffix(".app")
+            || lowered.hasSuffix(".framework")
+            || lowered.hasSuffix(".bundle")
+            || lowered.hasSuffix(".plugin")
+            || lowered.hasSuffix(".kext")
+            || lowered.hasSuffix(".prefpane")
+            || lowered.hasSuffix(".xpc")
+            || lowered.hasSuffix(".qlgenerator")
+            || lowered.hasSuffix(".mdimporter")
+            || lowered.hasSuffix(".appex")
+            || lowered.hasSuffix(".saver")
+    }
 }

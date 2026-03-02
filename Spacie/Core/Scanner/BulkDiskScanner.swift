@@ -459,7 +459,7 @@ final class BulkDiskScanner: Sendable {
                             continue
                         }
 
-                        if Self.isPackageExtension(nameString) {
+                        if nameString.isPackageDirectory {
                             dirNodeFlags.insert(.isPackage)
                         }
                         // Don't increment directoriesScanned here — each child
@@ -472,7 +472,7 @@ final class BulkDiskScanner: Sendable {
                             logicalSize: 0,
                             physicalSize: 0,
                             flags: dirNodeFlags,
-                            fileType: Self.isPackageExtension(nameString) ? .application : .other,
+                            fileType: nameString.isPackageDirectory ? .application : .other,
                             modTime: modTimeSec,
                             inode: inode,
                             depth: childDepth,
@@ -615,27 +615,19 @@ final class BulkDiskScanner: Sendable {
                     throttleInterval: configuration.throttleInterval,
                     exclusionRules: configuration.exclusionRules
                 )
-                // Synchronously consume fallback events on this same thread.
-                // We use a semaphore to bridge async → sync since we are
-                // already on a detached task.
-                let fallbackStream = fallbackScanner!.scan(configuration: subConfig)
-                let statsBox = FallbackStatsBox()
-                let semaphore = DispatchSemaphore(value: 0)
-
-                Task { @Sendable in
-                    for await event in fallbackStream {
-                        switch event {
-                        case .completed(let stats):
-                            statsBox.stats = stats
-                        default:
-                            emit(event)
-                        }
+                // Synchronously consume fallback events on the current thread.
+                // scanSync avoids blocking Swift cooperative threads with a semaphore.
+                var fallbackStats: ScanStats? = nil
+                fallbackScanner!.scanSync(configuration: subConfig) { event in
+                    switch event {
+                    case .completed(let stats):
+                        fallbackStats = stats
+                    default:
+                        emit(event)
                     }
-                    semaphore.signal()
                 }
-                semaphore.wait()
 
-                if let stats = statsBox.stats {
+                if let stats = fallbackStats {
                     filesScanned &+= stats.totalFiles
                     directoriesScanned &+= stats.totalDirectories
                     totalLogicalSize &+= stats.totalLogicalSize
@@ -660,7 +652,7 @@ final class BulkDiskScanner: Sendable {
             if !dirName.isEmpty && dirName.utf8.first == 0x2E {
                 dirFlags.insert(.isHidden)
             }
-            if isPackageExtension(dirName) {
+            if dirName.isPackageDirectory {
                 dirFlags.insert(.isPackage)
             }
 
@@ -670,7 +662,7 @@ final class BulkDiskScanner: Sendable {
                 logicalSize: 0,
                 physicalSize: 0,
                 flags: dirFlags,
-                fileType: isPackageExtension(dirName) ? .application : .other,
+                fileType: dirName.isPackageDirectory ? .application : .other,
                 modTime: UInt32(truncatingIfNeeded: dirMtimeValue),
                 inode: dirStat.st_ino,
                 depth: depth,
@@ -740,32 +732,5 @@ final class BulkDiskScanner: Sendable {
         return String(path[afterSlash...])
     }
 
-    // MARK: - Package Detection
-
-    /// Determines whether a name represents a macOS package directory.
-    ///
-    /// Package directories (`.app`, `.framework`, etc.) are treated as opaque
-    /// bundles in the visualization rather than drillable directories.
-    private static func isPackageExtension(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        return lowered.hasSuffix(".app")
-            || lowered.hasSuffix(".framework")
-            || lowered.hasSuffix(".bundle")
-            || lowered.hasSuffix(".plugin")
-            || lowered.hasSuffix(".kext")
-            || lowered.hasSuffix(".prefpane")
-            || lowered.hasSuffix(".xpc")
-            || lowered.hasSuffix(".qlgenerator")
-            || lowered.hasSuffix(".mdimporter")
-            || lowered.hasSuffix(".appex")
-            || lowered.hasSuffix(".saver")
-    }
 }
 
-// MARK: - Fallback Stats Box
-
-/// Sendable container for collecting fallback DiskScanner stats
-/// across the async/sync boundary.
-private final class FallbackStatsBox: @unchecked Sendable {
-    var stats: ScanStats?
-}

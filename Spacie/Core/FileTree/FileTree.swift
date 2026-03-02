@@ -54,6 +54,7 @@ final class FileTree: @unchecked Sendable {
 
     /// Whether the tree has been finalized (build complete, ready for concurrent reads).
     private(set) var isFinalized: Bool = false
+    private var _entryCountsAggregated: Bool = false
 
     /// The root path that was scanned.
     private(set) var rootPath: String = ""
@@ -96,7 +97,9 @@ final class FileTree: @unchecked Sendable {
 
     /// The total number of nodes in the tree (excluding the sentinel at index 0).
     var nodeCount: Int {
-        nodes.count - 1
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return nodes.count - 1
     }
 
     /// Inserts a ``RawFileNode`` (produced by ``DiskScanner``) into the tree.
@@ -220,84 +223,78 @@ final class FileTree: @unchecked Sendable {
     ///
     /// - Parameter path: The full path whose ancestors must exist.
     /// - Returns: The index of the immediate parent.
+    ///
+    /// Iterative implementation to avoid call-stack overflow on deeply nested paths.
     private func ensureParentChain(for path: String) -> UInt32 {
-        // Check if already known
-        if let idx = pathIndex[path] {
-            return idx
+        if let idx = pathIndex[path] { return idx }
+
+        // Collect all missing path segments walking upward (bottom → top)
+        var missing: [String] = []
+        var current = path
+        while !current.isEmpty && pathIndex[current] == nil {
+            missing.append(current)
+            current = parentPathComponent(of: current)
         }
 
-        // Compute parent of this path
-        let parentOfParent: String
-        if let lastSlash = path.lastIndex(of: "/") {
-            if lastSlash == path.startIndex {
-                if path.count > 1 {
-                    // Path is like "/Users" — parent is root "/"
-                    parentOfParent = "/"
-                } else {
-                    // Path is exactly "/" — root has no parent
-                    parentOfParent = ""
-                }
+        // Insert from top → bottom so each parent exists before its child
+        missing.reverse()
+
+        for missingPath in missing {
+            let parentStr = parentPathComponent(of: missingPath)
+            let parentIdx: UInt32 = parentStr.isEmpty ? 0 : (pathIndex[parentStr] ?? 0)
+
+            let dirName: String
+            if missingPath == "/" {
+                dirName = "/"
+            } else if let lastSlash = missingPath.lastIndex(of: "/") {
+                dirName = String(missingPath[missingPath.index(after: lastSlash)...])
             } else {
-                parentOfParent = String(path[path.startIndex..<lastSlash])
+                dirName = missingPath
             }
-        } else {
-            parentOfParent = ""
+
+            let (nameOffset, nameLength) = stringPool.append(dirName)
+            let newIndex = UInt32(nodes.count)
+
+            var placeholder = FileNode(
+                nameOffset: nameOffset,
+                nameLength: nameLength,
+                parentIndex: parentIdx,
+                firstChildIndex: 0,
+                nextSiblingIndex: 0,
+                logicalSize: 0,
+                physicalSize: 0,
+                flags: [.isDirectory],
+                fileType: .other,
+                modTime: 0,
+                childCount: 0,
+                inode: 0,
+                dirMtime: 0
+            )
+
+            if parentIdx > 0 && Int(parentIdx) < nodes.count {
+                placeholder.nextSiblingIndex = nodes[Int(parentIdx)].firstChildIndex
+                nodes[Int(parentIdx)].firstChildIndex = newIndex
+                nodes[Int(parentIdx)].childCount &+= 1
+            }
+
+            nodes.append(placeholder)
+            pathIndex[missingPath] = newIndex
+
+            if parentIdx == 0 && missingPath == "/" {
+                rootPath = "/"
+            }
         }
 
-        // Recurse to ensure the grandparent exists
-        let grandparentIdx: UInt32
-        if parentOfParent.isEmpty {
-            grandparentIdx = 0
-        } else {
-            grandparentIdx = ensureParentChain(for: parentOfParent)
+        return pathIndex[path] ?? 0
+    }
+
+    /// Returns the parent path string for a given path.
+    private func parentPathComponent(of path: String) -> String {
+        guard let lastSlash = path.lastIndex(of: "/") else { return "" }
+        if lastSlash == path.startIndex {
+            return path.count > 1 ? "/" : ""
         }
-
-        // Extract the directory name from the path
-        let dirName: String
-        if path == "/" {
-            dirName = "/"
-        } else if let lastSlash = path.lastIndex(of: "/") {
-            dirName = String(path[path.index(after: lastSlash)...])
-        } else {
-            dirName = path
-        }
-
-        // Create a placeholder directory node
-        let (nameOffset, nameLength) = stringPool.append(dirName)
-        let newIndex = UInt32(nodes.count)
-
-        var placeholder = FileNode(
-            nameOffset: nameOffset,
-            nameLength: nameLength,
-            parentIndex: grandparentIdx,
-            firstChildIndex: 0,
-            nextSiblingIndex: 0,
-            logicalSize: 0,
-            physicalSize: 0,
-            flags: [.isDirectory],
-            fileType: .other,
-            modTime: 0,
-            childCount: 0,
-            inode: 0,
-            dirMtime: 0
-        )
-
-        // Link to grandparent
-        if grandparentIdx > 0 && Int(grandparentIdx) < nodes.count {
-            placeholder.nextSiblingIndex = nodes[Int(grandparentIdx)].firstChildIndex
-            nodes[Int(grandparentIdx)].firstChildIndex = newIndex
-            nodes[Int(grandparentIdx)].childCount &+= 1
-        }
-
-        nodes.append(placeholder)
-        pathIndex[path] = newIndex
-
-        // If we just created the root placeholder, set rootPath
-        if grandparentIdx == 0 && path == "/" {
-            rootPath = "/"
-        }
-
-        return newIndex
+        return String(path[path.startIndex..<lastSlash])
     }
 
     /// Aggregates sizes from leaf nodes up to the root.
@@ -344,10 +341,11 @@ final class FileTree: @unchecked Sendable {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
 
-        // NOTE: NOT idempotent. Must be called exactly once.
-        // Unlike sizes (where ground truth is on leaf files and dirs start at 0),
-        // entryCount ground truth is on directory nodes themselves (direct count
-        // from readdir). Zeroing would destroy it.
+        // Guard: must be called exactly once. Entry counts accumulate on top of
+        // per-directory readdir values, so a second call would double them.
+        guard !_entryCountsAggregated else { return }
+        _entryCountsAggregated = true
+
         let count = nodes.count
         for i in stride(from: count - 1, through: 1, by: -1) {
             let parentIdx = Int(nodes[i].parentIndex)
@@ -373,7 +371,7 @@ final class FileTree: @unchecked Sendable {
         var orphanSizeSum: UInt64 = 0
         var rootChildrenSizeSum: UInt64 = 0
 
-        let rootIdx = rootIndex
+        let rootIdx: UInt32 = nodes.count > 1 ? 1 : 0
         let rootNode = rootIdx > 0 && Int(rootIdx) < count ? nodes[Int(rootIdx)] : nil
         log("=== DIAGNOSTIC DUMP ===")
         log("Total nodes (incl sentinel): \(count)")
@@ -480,6 +478,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index (1-based; 0 is the sentinel).
     /// - Returns: The file node, or `nil` if the index is out of bounds or zero.
     func node(at index: UInt32) -> FileNode? {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return nil }
         return nodes[i]
@@ -494,6 +494,12 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The parent node index.
     /// - Returns: An array of child node indices.
     func children(of index: UInt32) -> [UInt32] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return _children(of: index)
+    }
+
+    private func _children(of index: UInt32) -> [UInt32] {
         let i = Int(index)
         guard i > 0, i < nodes.count else { return [] }
 
@@ -502,9 +508,12 @@ final class FileTree: @unchecked Sendable {
         result.reserveCapacity(Int(expectedCount))
 
         var childIdx = nodes[i].firstChildIndex
-        while childIdx != 0 && Int(childIdx) < nodes.count {
+        var safety = 0
+        let maxIterations = nodes.count
+        while childIdx != 0 && Int(childIdx) < nodes.count && safety < maxIterations {
             result.append(childIdx)
             childIdx = nodes[Int(childIdx)].nextSiblingIndex
+            safety += 1
         }
 
         return result
@@ -515,6 +524,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The parent's index, or `nil` if the node is the root or invalid.
     func parent(of index: UInt32) -> UInt32? {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return nil }
         let parentIdx = nodes[i].parentIndex
@@ -534,6 +545,8 @@ final class FileTree: @unchecked Sendable {
     ///   placeholder info for invalid indices rather than nil, since most call
     ///   sites operate on known-valid indices.
     func nodeInfo(at index: UInt32) -> FileNodeInfo {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else {
             return FileNodeInfo(
@@ -554,8 +567,8 @@ final class FileTree: @unchecked Sendable {
 
         let node = nodes[i]
         let name = stringPool.getString(offset: node.nameOffset, length: node.nameLength)
-        let path = fullPath(of: index)
-        let depth = computeDepth(of: index)
+        let path = _fullPath(of: index)
+        let depth = _computeDepth(of: index)
 
         return FileNodeInfo(
             id: index,
@@ -579,6 +592,12 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The full path from root to this node, separated by `/`.
     func fullPath(of index: UInt32) -> String {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return _fullPath(of: index)
+    }
+
+    private func _fullPath(of index: UInt32) -> String {
         var components = [String]()
         var current = index
 
@@ -608,7 +627,7 @@ final class FileTree: @unchecked Sendable {
     }
 
     /// Computes the depth of a node by counting parent hops to the root.
-    private func computeDepth(of index: UInt32) -> Int {
+    private func _computeDepth(of index: UInt32) -> Int {
         var depth = 0
         var current = nodes[Int(index)].parentIndex
         while current > 0 && Int(current) < nodes.count {
@@ -630,20 +649,22 @@ final class FileTree: @unchecked Sendable {
     ///   - order: The sort order (criteria + direction).
     /// - Returns: An array of sorted child indices.
     func sortedChildren(of index: UInt32, by order: TreeSortOrder) -> [UInt32] {
-        let childIndices = children(of: index)
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        let childIndices = _children(of: index)
         guard childIndices.count > 1 else { return childIndices }
 
         return childIndices.sorted(by: { (a: UInt32, b: UInt32) -> Bool in
-            let nodeA = nodes[Int(a)]
-            let nodeB = nodes[Int(b)]
+            let nodeA = self.nodes[Int(a)]
+            let nodeB = self.nodes[Int(b)]
 
             let result: Bool
             switch order.criteria {
             case .size:
                 result = nodeA.logicalSize < nodeB.logicalSize
             case .name:
-                let nameA = stringPool.getString(offset: nodeA.nameOffset, length: nodeA.nameLength)
-                let nameB = stringPool.getString(offset: nodeB.nameOffset, length: nodeB.nameLength)
+                let nameA = self.stringPool.getString(offset: nodeA.nameOffset, length: nodeA.nameLength)
+                let nameB = self.stringPool.getString(offset: nodeB.nameOffset, length: nodeB.nameLength)
                 result = nameA.localizedStandardCompare(nameB) == .orderedAscending
             case .date:
                 result = nodeA.modTime < nodeB.modTime
@@ -667,6 +688,8 @@ final class FileTree: @unchecked Sendable {
     ///   - minSize: Optional minimum file size in bytes. Files smaller are excluded.
     /// - Returns: An array of node indices sorted by size descending.
     func topFiles(count: Int, minSize: UInt64? = nil) -> [UInt32] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         // Use a simple sorted insertion approach:
         // For large trees, a min-heap of size `count` would be optimal,
         // but the constant factor of Array.sort on ~1M elements is acceptable.
@@ -692,6 +715,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter type: The file type to filter by.
     /// - Returns: An array of matching node indices.
     func filesByType(_ type: FileType) -> [UInt32] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         var result = [UInt32]()
 
         for i in 1..<nodes.count {
@@ -708,6 +733,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The file/directory name, or an empty string if the index is invalid.
     func name(of index: UInt32) -> String {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return "" }
         let node = nodes[i]
@@ -719,6 +746,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The logical size in bytes, or 0 if the index is invalid.
     func logicalSize(of index: UInt32) -> UInt64 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return 0 }
         return nodes[i].logicalSize
@@ -729,6 +758,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The physical size in bytes, or 0 if the index is invalid.
     func physicalSize(of index: UInt32) -> UInt64 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return 0 }
         return nodes[i].physicalSize
@@ -738,7 +769,9 @@ final class FileTree: @unchecked Sendable {
 
     /// The index of the root node (always 1 if the tree has been populated).
     var rootIndex: UInt32 {
-        nodes.count > 1 ? 1 : 0
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return nodes.count > 1 ? 1 : 0
     }
 
     // MARK: - Entry Count Access
@@ -748,6 +781,8 @@ final class FileTree: @unchecked Sendable {
     /// - Parameter index: The node index.
     /// - Returns: The entry count, or 0 if the index is invalid.
     func entryCount(of index: UInt32) -> UInt32 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return 0 }
         return nodes[i].entryCount
@@ -760,6 +795,8 @@ final class FileTree: @unchecked Sendable {
     ///
     /// - Returns: Array of `(index, entryCount)` tuples for all directory nodes.
     func allDirectoriesByEntryCount() -> [(index: UInt32, entryCount: UInt32)] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         var dirs: [(index: UInt32, entryCount: UInt32)] = []
         dirs.reserveCapacity(nodes.count / 4) // rough estimate
 
@@ -827,7 +864,9 @@ final class FileTree: @unchecked Sendable {
 
     /// Provides read-only access to the raw node array for binary serialization.
     var serializedNodes: [FileNode] {
-        nodes
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return nodes
     }
 
     /// Reconstructs a FileTree from previously serialized data.
@@ -967,28 +1006,25 @@ final class FileTree: @unchecked Sendable {
         }
     }
 
-    /// Recursively removes all descendants of the node at `index` from ``pathIndex``.
+    /// Iteratively removes all descendants of the node at `index` from ``pathIndex``.
     ///
-    /// Walks the child linked list via `firstChildIndex` / `nextSiblingIndex` and
-    /// removes each descendant's full path from the path index. The node at `index`
-    /// itself is **not** removed — only its children and their subtrees.
+    /// Uses an explicit stack to avoid call-stack overflow on deeply nested trees
+    /// (e.g., `node_modules` chains that can reach depth 5000+).
     ///
     /// The caller **must** hold `_lock` before invoking this method.
     ///
     /// - Parameter index: The node index whose descendants should be removed from pathIndex.
     private func removeSubtreeFromPathIndex(at index: Int) {
-        var childIdx = nodes[index].firstChildIndex
-        while childIdx != 0 && Int(childIdx) < nodes.count {
-            let childIndex = Int(childIdx)
-
-            // Recursively remove grandchildren first
-            removeSubtreeFromPathIndex(at: childIndex)
-
-            // Build the full path for this child and remove it from pathIndex
-            let childPath = fullPath(of: childIdx)
-            pathIndex.removeValue(forKey: childPath)
-
-            childIdx = nodes[childIndex].nextSiblingIndex
+        var stack: [Int] = [index]
+        while let current = stack.popLast() {
+            var childIdx = nodes[current].firstChildIndex
+            while childIdx != 0 && Int(childIdx) < nodes.count {
+                let childIndex = Int(childIdx)
+                stack.append(childIndex)
+                let childPath = _fullPath(of: childIdx)
+                pathIndex.removeValue(forKey: childPath)
+                childIdx = nodes[childIndex].nextSiblingIndex
+            }
         }
     }
 
@@ -1000,6 +1036,8 @@ final class FileTree: @unchecked Sendable {
     /// - Returns: The ``FileNode`` at that index.
     /// - Note: Index 0 is the sentinel. Valid tree nodes start at index 1.
     subscript(_ index: UInt32) -> FileNode {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i >= 0, i < nodes.count else { return nodes[0] }
         return nodes[i]
@@ -1014,6 +1052,8 @@ final class FileTree: @unchecked Sendable {
     ///   - mode: Whether to return logical or physical size.
     /// - Returns: The size in bytes, or 0 if the index is invalid.
     func size(of index: UInt32, mode: SizeMode) -> UInt64 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let i = Int(index)
         guard i > 0, i < nodes.count else { return 0 }
         switch mode {
@@ -1028,6 +1068,8 @@ final class FileTree: @unchecked Sendable {
 
     /// Returns memory usage statistics for the tree.
     var memoryUsage: (nodesBytes: Int, stringPoolBytes: Int, totalBytes: Int) {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         let nodesBytes = nodes.count * MemoryLayout<FileNode>.stride
         let poolBytes = stringPool.byteCount
         let total = nodesBytes + poolBytes

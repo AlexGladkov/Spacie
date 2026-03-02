@@ -40,7 +40,7 @@ final class DiskScanner: Sendable {
     func scan(configuration: ScanConfiguration) -> AsyncStream<ScanEvent> {
         AsyncStream(bufferingPolicy: .bufferingNewest(4096)) { continuation in
             let task = Task.detached(priority: .userInitiated) {
-                Self.performScan(configuration: configuration, continuation: continuation)
+                Self.performScanCore(configuration: configuration) { continuation.yield($0) }
                 continuation.finish()
             }
             continuation.onTermination = { @Sendable _ in
@@ -49,15 +49,23 @@ final class DiskScanner: Sendable {
         }
     }
 
+    /// Synchronous scan that calls `emit` for each event on the calling thread.
+    ///
+    /// Use this from within synchronous contexts (e.g., BulkDiskScanner fallback)
+    /// to avoid semaphore-blocking Swift concurrency threads.
+    func scanSync(configuration: ScanConfiguration, emit: (ScanEvent) -> Void) {
+        Self.performScanCore(configuration: configuration, emit: emit)
+    }
+
     // MARK: - Core Scan Implementation
 
     /// Performs the actual POSIX file tree scan synchronously on the calling thread.
     ///
     /// This method is intentionally non-async to avoid unnecessary suspension points
     /// in the hot loop. It runs on a detached task with `.userInitiated` priority.
-    private static func performScan(
+    private static func performScanCore(
         configuration: ScanConfiguration,
-        continuation: AsyncStream<ScanEvent>.Continuation
+        emit: (ScanEvent) -> Void
     ) {
         let rootPath = configuration.rootPath.path(percentEncoded: false)
 
@@ -98,7 +106,7 @@ final class DiskScanner: Sendable {
 
         guard let fts = ftsp else {
             let code = errno
-            continuation.yield(.error(
+            emit(.error(
                 path: rootPath,
                 code: code,
                 message: String(cString: strerror(code))
@@ -149,19 +157,19 @@ final class DiskScanner: Sendable {
                             parentPath: parentPath(of: currentPath),
                             dirMtime: UInt64(st.st_mtimespec.tv_sec)
                         )
-                        continuation.yield(.fileFound(node: rawNode))
-                        continuation.yield(.directorySkipped(path: currentPath, depth: depth))
+                        emit(.fileFound(node: rawNode))
+                        emit(.directorySkipped(path: currentPath, depth: depth))
                         continue // next fts_read iteration
                     }
                 }
 
                 directoriesScanned &+= 1
-                continuation.yield(.directoryEntered(path: currentPath, depth: depth))
+                emit(.directoryEntered(path: currentPath, depth: depth))
 
             // ---- Post-order directory visit ----
             case FTS_DP:
                 let st = entry.pointee.fts_statp!.pointee
-                continuation.yield(.directoryCompleted(
+                emit(.directoryCompleted(
                     path: currentPath,
                     totalSize: UInt64(st.st_size)
                 ))
@@ -170,7 +178,7 @@ final class DiskScanner: Sendable {
                 let name = extractEntryName(entry)
                 var flags: FileNodeFlags = [.isDirectory]
                 if name.hasPrefix(".") { flags.insert(.isHidden) }
-                if isPackageExtension(name) { flags.insert(.isPackage) }
+                if name.isPackageDirectory { flags.insert(.isPackage) }
 
                 let rawNode = RawFileNode(
                     name: name,
@@ -178,14 +186,14 @@ final class DiskScanner: Sendable {
                     logicalSize: 0, // Aggregated later by FileTree
                     physicalSize: 0,
                     flags: flags,
-                    fileType: isPackageExtension(name) ? .application : .other,
+                    fileType: name.isPackageDirectory ? .application : .other,
                     modTime: UInt32(truncatingIfNeeded: st.st_mtimespec.tv_sec),
                     inode: st.st_ino,
                     depth: depth,
                     parentPath: parentPath(of: currentPath),
                     dirMtime: UInt64(st.st_mtimespec.tv_sec)
                 )
-                continuation.yield(.fileFound(node: rawNode))
+                emit(.fileFound(node: rawNode))
 
             // ---- Regular file ----
             case FTS_F:
@@ -239,7 +247,7 @@ final class DiskScanner: Sendable {
                     depth: depth,
                     parentPath: parentPath(of: currentPath)
                 )
-                continuation.yield(.fileFound(node: rawNode))
+                emit(.fileFound(node: rawNode))
 
             // ---- Symbolic link ----
             case FTS_SL, FTS_SLNONE:
@@ -262,13 +270,13 @@ final class DiskScanner: Sendable {
                     depth: depth,
                     parentPath: parentPath(of: currentPath)
                 )
-                continuation.yield(.fileFound(node: rawNode))
+                emit(.fileFound(node: rawNode))
 
             // ---- Directory not readable (EACCES or similar) ----
             case FTS_DNR:
                 restrictedDirectories &+= 1
                 directoriesScanned &+= 1
-                continuation.yield(.restricted(path: currentPath))
+                emit(.restricted(path: currentPath))
 
                 // Still emit a node so the tree reflects the restricted directory
                 let st = entry.pointee.fts_statp!.pointee
@@ -287,12 +295,12 @@ final class DiskScanner: Sendable {
                     parentPath: parentPath(of: currentPath),
                     dirMtime: UInt64(st.st_mtimespec.tv_sec)
                 )
-                continuation.yield(.fileFound(node: rawNode))
+                emit(.fileFound(node: rawNode))
 
             // ---- Errors ----
             case FTS_ERR, FTS_NS:
                 let code = entry.pointee.fts_errno
-                continuation.yield(.error(
+                emit(.error(
                     path: currentPath,
                     code: code,
                     message: String(cString: strerror(code))
@@ -314,7 +322,7 @@ final class DiskScanner: Sendable {
                     let elapsedSeconds = Double(totalElapsed.components.seconds)
                         + Double(totalElapsed.components.attoseconds) / 1e18
 
-                    continuation.yield(.progress(ScanProgress(
+                    emit(.progress(ScanProgress(
                         filesScanned: filesScanned,
                         directoriesScanned: directoriesScanned,
                         skippedDirectories: skippedDirectories,
@@ -333,7 +341,7 @@ final class DiskScanner: Sendable {
         let durationSeconds = Double(totalDuration.components.seconds)
             + Double(totalDuration.components.attoseconds) / 1e18
 
-        continuation.yield(.completed(stats: ScanStats(
+        emit(.completed(stats: ScanStats(
             totalFiles: filesScanned,
             totalDirectories: directoriesScanned,
             totalLogicalSize: totalLogicalSize,
@@ -401,22 +409,4 @@ final class DiskScanner: Sendable {
         return String(path[path.startIndex..<lastSlash])
     }
 
-    /// Determines whether a name represents a macOS package directory.
-    ///
-    /// Package directories (`.app`, `.framework`, etc.) are treated as opaque
-    /// bundles in the visualization rather than drillable directories.
-    private static func isPackageExtension(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        return lowered.hasSuffix(".app")
-            || lowered.hasSuffix(".framework")
-            || lowered.hasSuffix(".bundle")
-            || lowered.hasSuffix(".plugin")
-            || lowered.hasSuffix(".kext")
-            || lowered.hasSuffix(".prefpane")
-            || lowered.hasSuffix(".xpc")
-            || lowered.hasSuffix(".qlgenerator")
-            || lowered.hasSuffix(".mdimporter")
-            || lowered.hasSuffix(".appex")
-            || lowered.hasSuffix(".saver")
-    }
 }

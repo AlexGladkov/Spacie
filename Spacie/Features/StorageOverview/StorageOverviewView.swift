@@ -106,6 +106,7 @@ final class StorageOverviewViewModel {
         ]
 
         let nodeCount = tree.nodeCount
+        guard nodeCount > 0 else { return }
         for index in 1...UInt32(nodeCount) {
             let info = tree.nodeInfo(at: index)
 

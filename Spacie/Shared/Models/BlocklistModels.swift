@@ -49,10 +49,13 @@ final class BlocklistManager: Sendable {
         return home.appendingPathComponent(".spacie/blocklist.txt")
     }()
 
+    nonisolated(unsafe) private static var _lock = os_unfair_lock()
     nonisolated(unsafe) private static var _userPatterns: [String] = []
     nonisolated(unsafe) private static var _loaded = false
 
     static var userPatterns: [String] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
         if !_loaded {
             _loaded = true
             _userPatterns = loadUserBlocklist()
@@ -121,7 +124,9 @@ final class BlocklistManager: Sendable {
         let content = "# Spacie blocklist — one glob pattern per line\n" +
             patterns.joined(separator: "\n") + "\n"
         try content.write(to: blocklistFileURL, atomically: true, encoding: .utf8)
+        os_unfair_lock_lock(&_lock)
         _userPatterns = patterns
+        os_unfair_lock_unlock(&_lock)
     }
 
     static func addPattern(_ pattern: String) throws {

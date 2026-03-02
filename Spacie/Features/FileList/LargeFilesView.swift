@@ -85,22 +85,32 @@ final class LargeFilesViewModel {
 
     // MARK: Refresh
 
+    private var refreshTask: Task<Void, Never>?
+
     func refresh(tree: FileTree, sizeMode: SizeMode) {
+        refreshTask?.cancel()
         isRefreshing = true
-        defer { isRefreshing = false }
 
-        switch mode {
-        case .topN(let count):
-            let indices = tree.topFiles(count: count, minSize: nil)
-            files = indices.map { tree.nodeInfo(at: $0) }
-        case .threshold(let minSize):
-            let indices = tree.topFiles(count: Int.max, minSize: minSize)
-            files = indices.map { tree.nodeInfo(at: $0) }
+        let currentMode = mode
+        refreshTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                switch currentMode {
+                case .topN(let count):
+                    return tree.topFiles(count: count, minSize: nil)
+                        .map { tree.nodeInfo(at: $0) }
+                case .threshold(let minSize):
+                    return tree.topFiles(count: Int.max, minSize: minSize)
+                        .map { tree.nodeInfo(at: $0) }
+                }
+            }.value
+
+            guard !Task.isCancelled else { return }
+
+            self.files = result
+            let validIds = Set(result.map(\.id))
+            self.selectedFiles = self.selectedFiles.intersection(validIds)
+            self.isRefreshing = false
         }
-
-        // Clear stale selections
-        let validIds = Set(files.map(\.id))
-        selectedFiles = selectedFiles.intersection(validIds)
     }
 
     // MARK: Selection
