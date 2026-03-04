@@ -9,12 +9,31 @@ final class DuplicateFinderViewModel {
     // MARK: State
 
     var state: DuplicateScanState = .idle
-    var groups: [DuplicateGroup] = []
+
+    var groups: [DuplicateGroup] = [] {
+        didSet {
+            _totalWasted = groups.reduce(0) { $0 + $1.wastedSpace }
+            _totalDuplicateFiles = groups.reduce(0) { $0 + $1.fileCount }
+            recomputeFilteredGroups()
+            recomputeSelectedForDeletion()
+        }
+    }
+
     var expandedGroupId: String?
     var selectedStrategy: AutoSelectStrategy = .keepNewest
-    var selectedFileIds: Set<String> = []
-    var sortMode: DuplicateSortMode = .wastedSpace
-    var searchText: String = ""
+
+    var selectedFileIds: Set<String> = [] {
+        didSet { recomputeSelectedForDeletion() }
+    }
+
+    var sortMode: DuplicateSortMode = .wastedSpace {
+        didSet { recomputeFilteredGroups() }
+    }
+
+    var searchText: String = "" {
+        didSet { recomputeFilteredGroups() }
+    }
+
     var filterOptions: DuplicateFilterOptions = DuplicateFilterOptions()
 
     // MARK: Engine
@@ -22,29 +41,27 @@ final class DuplicateFinderViewModel {
     private let engine = DuplicateEngine()
     private var scanTask: Task<Void, Never>?
 
-    // MARK: Computed
+    // MARK: Cached Computed (updated only when source data changes)
 
-    var totalWasted: UInt64 {
-        groups.reduce(0) { $0 + $1.wastedSpace }
-    }
+    /// Filtered and sorted groups. Recomputed only when groups/searchText/sortMode change.
+    private(set) var filteredGroups: [DuplicateGroup] = []
 
-    var totalGroupCount: Int {
-        groups.count
-    }
+    private var _totalWasted: UInt64 = 0
+    private var _totalDuplicateFiles: Int = 0
 
-    var totalDuplicateFiles: Int {
-        groups.reduce(0) { $0 + $1.fileCount }
-    }
+    var totalWasted: UInt64 { _totalWasted }
 
-    var selectedForDeletion: [DuplicateFile] {
-        groups.flatMap { $0.files.filter { selectedFileIds.contains($0.id) } }
-    }
+    var totalGroupCount: Int { groups.count }
 
-    var selectedForDeletionSize: UInt64 {
-        selectedForDeletion.reduce(0) { $0 + $1.size }
-    }
+    var totalDuplicateFiles: Int { _totalDuplicateFiles }
 
-    var filteredGroups: [DuplicateGroup] {
+    /// Files selected for deletion. Recomputed only when selectedFileIds or groups change.
+    private(set) var selectedForDeletion: [DuplicateFile] = []
+    private(set) var selectedForDeletionSize: UInt64 = 0
+
+    // MARK: Private Recompute
+
+    private func recomputeFilteredGroups() {
         var result = groups
         if !searchText.isEmpty {
             let q = searchText.lowercased()
@@ -57,7 +74,13 @@ final class DuplicateFinderViewModel {
         case .count:       result.sort { $0.fileCount > $1.fileCount }
         case .fileSize:    result.sort { $0.fileSize > $1.fileSize }
         }
-        return result
+        filteredGroups = result
+    }
+
+    private func recomputeSelectedForDeletion() {
+        let selected = groups.flatMap { $0.files.filter { selectedFileIds.contains($0.id) } }
+        selectedForDeletion = selected
+        selectedForDeletionSize = selected.reduce(0) { $0 + $1.size }
     }
 
     var currentStats: DuplicateStats? {
