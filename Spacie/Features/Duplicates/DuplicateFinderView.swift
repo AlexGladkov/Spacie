@@ -12,6 +12,10 @@ final class DuplicateFinderViewModel {
     var groups: [DuplicateGroup] = []
     var expandedGroupId: String?
     var selectedStrategy: AutoSelectStrategy = .keepNewest
+    var selectedFileIds: Set<String> = []
+    var sortMode: DuplicateSortMode = .wastedSpace
+    var searchText: String = ""
+    var filterOptions: DuplicateFilterOptions = DuplicateFilterOptions()
 
     // MARK: Engine
 
@@ -28,14 +32,37 @@ final class DuplicateFinderViewModel {
         groups.count
     }
 
+    var totalDuplicateFiles: Int {
+        groups.reduce(0) { $0 + $1.fileCount }
+    }
+
     var selectedForDeletion: [DuplicateFile] {
-        groups.flatMap { group in
-            group.files.filter(\.isSelected)
-        }
+        groups.flatMap { $0.files.filter { selectedFileIds.contains($0.id) } }
     }
 
     var selectedForDeletionSize: UInt64 {
         selectedForDeletion.reduce(0) { $0 + $1.size }
+    }
+
+    var filteredGroups: [DuplicateGroup] {
+        var result = groups
+        if !searchText.isEmpty {
+            let q = searchText.lowercased()
+            result = result.filter { group in
+                group.files.contains { $0.name.lowercased().contains(q) }
+            }
+        }
+        switch sortMode {
+        case .wastedSpace: result.sort { $0.wastedSpace > $1.wastedSpace }
+        case .count:       result.sort { $0.fileCount > $1.fileCount }
+        case .fileSize:    result.sort { $0.fileSize > $1.fileSize }
+        }
+        return result
+    }
+
+    var currentStats: DuplicateStats? {
+        if case .completed(let stats) = state { return stats }
+        return nil
     }
 
     var isScanning: Bool {
@@ -47,8 +74,7 @@ final class DuplicateFinderViewModel {
 
     var progressValue: Double {
         switch state {
-        case .computingPartialHash(let progress): return progress
-        case .computingFullHash(_, let progress): return progress
+        case .hashing(let progress): return progress.fraction
         case .completed: return 1.0
         default: return 0.0
         }
@@ -56,11 +82,14 @@ final class DuplicateFinderViewModel {
 
     // MARK: Actions
 
-    func startScan(tree: FileTree) async {
+    func startScan(tree: FileTree) {
         cancelScan()
+        groups = []
+        selectedFileIds.removeAll()
+        state = .groupingBySize
 
         scanTask = Task {
-            let stream = await engine.findDuplicates(in: tree)
+            let stream = await engine.findDuplicates(in: tree, filterOptions: filterOptions)
 
             for await event in stream {
                 guard !Task.isCancelled else { break }
@@ -72,118 +101,77 @@ final class DuplicateFinderViewModel {
     func cancelScan() {
         scanTask?.cancel()
         scanTask = nil
-        Task { await engine.cancel() }
+        if case .completed = state { } else { state = .idle }
+    }
+
+    func onTreeChanged(tree: FileTree) {
+        cancelScan()
+        groups = []
+        selectedFileIds.removeAll()
+        state = .idle
     }
 
     func computeFullHash(for groupId: String) async {
-        guard let groupIndex = groups.firstIndex(where: { $0.id == groupId }) else { return }
-        let group = groups[groupIndex]
-
-        state = .computingFullHash(groupId: groupId, progress: 0)
-
-        let urls = group.files.map(\.url)
+        guard let group = groups.first(where: { $0.id == groupId }) else { return }
 
         do {
-            let hashGroups = try await engine.computeFullHash(for: urls)
+            let confirmedGroups = try await engine.computeFullHash(for: group)
 
             // Replace the old group with confirmed groups
             self.groups.removeAll { $0.id == groupId }
-
-            for (hash, urls) in hashGroups where urls.count > 1 {
-                let files = urls.compactMap { url -> DuplicateFile? in
-                    guard let original = group.files.first(where: { $0.url == url }) else { return nil }
-                    return original
-                }
-                let newGroup = DuplicateGroup(
-                    id: "full-\(hash.prefix(16))",
-                    fileSize: group.fileSize,
-                    files: files,
-                    hashLevel: .fullHash
-                )
-                self.groups.append(newGroup)
-            }
-
+            self.groups.append(contentsOf: confirmedGroups)
             self.groups.sort { $0.wastedSpace > $1.wastedSpace }
 
-            if case .computingFullHash = self.state {
-                if let stats = self.buildStats() {
-                    self.state = .completed(stats: stats)
-                }
+            // Update stats if we were in completed state
+            if case .completed = self.state {
+                self.state = .completed(buildStats())
             }
         } catch {
-            state = .error("Hash computation failed: \(error.localizedDescription)")
+            // Silently handle -- the group remains at partial hash level
         }
     }
 
     func autoSelect(strategy: AutoSelectStrategy) {
+        selectedFileIds.removeAll()
         selectedStrategy = strategy
-
-        for groupIndex in groups.indices {
-            var files = groups[groupIndex].files
-
-            // Determine which file to keep
-            let keepIndex: Int
+        for group in groups {
+            let keepIdx: Int
             switch strategy {
             case .keepNewest:
-                keepIndex = files.indices.max(by: { files[$0].modificationDate < files[$1].modificationDate }) ?? 0
+                keepIdx = group.files.indices.max(by: {
+                    group.files[$0].modificationDate < group.files[$1].modificationDate
+                }) ?? 0
             case .keepOldest:
-                keepIndex = files.indices.min(by: { files[$0].modificationDate < files[$1].modificationDate }) ?? 0
+                keepIdx = group.files.indices.min(by: {
+                    group.files[$0].modificationDate < group.files[$1].modificationDate
+                }) ?? 0
             case .keepShortestPath:
-                keepIndex = files.indices.min(by: { files[$0].path.count < files[$1].path.count }) ?? 0
+                keepIdx = group.files.indices.min(by: {
+                    group.files[$0].path.count < group.files[$1].path.count
+                }) ?? 0
             }
-
-            // Mark all except keeper for deletion
-            for i in files.indices {
-                files[i].isSelected = (i != keepIndex)
+            for (i, file) in group.files.enumerated() where i != keepIdx {
+                selectedFileIds.insert(file.id)
             }
-
-            groups[groupIndex] = DuplicateGroup(
-                id: groups[groupIndex].id,
-                fileSize: groups[groupIndex].fileSize,
-                files: files,
-                hashLevel: groups[groupIndex].hashLevel
-            )
         }
     }
 
     func toggleFileSelection(groupId: String, fileId: String) {
-        guard let groupIndex = groups.firstIndex(where: { $0.id == groupId }) else { return }
-        var files = groups[groupIndex].files
-        guard let fileIndex = files.firstIndex(where: { $0.id == fileId }) else { return }
-
-        files[fileIndex].isSelected.toggle()
-
-        // Ensure at least one file is NOT selected (prevent deleting all copies)
-        let unselectedCount = files.filter { !$0.isSelected }.count
-        if unselectedCount == 0 {
-            // Revert the toggle
-            files[fileIndex].isSelected = false
-            return
+        guard let group = groups.first(where: { $0.id == groupId }) else { return }
+        if selectedFileIds.contains(fileId) {
+            selectedFileIds.remove(fileId)
+        } else {
+            // Ensure at least one file remains unselected
+            let selectedInGroup = group.files.filter { selectedFileIds.contains($0.id) }.count
+            if selectedInGroup < group.files.count - 1 {
+                selectedFileIds.insert(fileId)
+            }
         }
-
-        groups[groupIndex] = DuplicateGroup(
-            id: groups[groupIndex].id,
-            fileSize: groups[groupIndex].fileSize,
-            files: files,
-            hashLevel: groups[groupIndex].hashLevel
-        )
     }
 
-    func sendToDropZone(dropZone: DropZoneViewModel) {
+    func sendToDropZone(dropZone: DropZoneViewModel, tree: FileTree) {
         for file in selectedForDeletion {
-            let info = FileNodeInfo(
-                id: 0,
-                name: file.name,
-                fullPath: file.path,
-                logicalSize: file.size,
-                physicalSize: file.size,
-                isDirectory: false,
-                fileType: FileType.from(extension: file.url.pathExtension),
-                modificationDate: file.modificationDate,
-                childCount: 0,
-                depth: 0,
-                flags: FileNodeFlags(rawValue: 0)
-            )
+            let info = tree.nodeInfo(at: file.treeIndex)
             dropZone.addItem(info)
         }
     }
@@ -196,30 +184,18 @@ final class DuplicateFinderViewModel {
             state = .groupingBySize
         case .sizeGroupingCompleted:
             break
-        case .partialHashStarted:
-            state = .computingPartialHash(progress: 0)
-        case .partialHashProgress(let completed, let total):
-            let progress = total > 0 ? Double(completed) / Double(total) : 0
-            state = .computingPartialHash(progress: progress)
-        case .partialHashCompleted(let newGroups):
+        case .hashingProgress(let progress):
+            state = .hashing(progress)
+        case .hashingCompleted(let newGroups):
             groups = newGroups
-        case .fullHashStarted(let groupId, _):
-            state = .computingFullHash(groupId: groupId, progress: 0)
-        case .fullHashProgress(let groupId, let completed, let total):
-            let progress = total > 0 ? Double(completed) / Double(total) : 0
-            state = .computingFullHash(groupId: groupId, progress: progress)
-        case .fullHashCompleted(let groupId, let newGroups):
-            groups.removeAll { $0.id == groupId }
-            groups.append(contentsOf: newGroups)
-            groups.sort { $0.wastedSpace > $1.wastedSpace }
         case .error(let message):
             state = .error(message)
         case .completed(let stats):
-            state = .completed(stats: stats)
+            state = .completed(stats)
         }
     }
 
-    private func buildStats() -> DuplicateStats? {
+    private func buildStats() -> DuplicateStats {
         DuplicateStats(
             groupCount: groups.count,
             totalDuplicateFiles: groups.reduce(0) { $0 + $1.fileCount },
@@ -250,23 +226,22 @@ struct DuplicateFinderView: View {
                     detail: nil,
                     progress: nil
                 )
-            case .computingPartialHash(let progress):
+            case .hashing(let scanProgress):
                 progressContentView(
                     title: "Computing partial hashes...",
-                    detail: "\(Int(progress * 100))%",
-                    progress: progress
-                )
-            case .computingFullHash(let groupId, let progress):
-                progressContentView(
-                    title: "Computing full hash...",
-                    detail: "Group: \(groupId.prefix(8))... \(Int(progress * 100))%",
-                    progress: progress
+                    detail: "\(scanProgress.filesHashed)/\(scanProgress.totalFiles) files (\(Int(scanProgress.fraction * 100))%)",
+                    progress: scanProgress.fraction
                 )
             case .completed:
                 if viewModel.groups.isEmpty {
                     emptyResultView
                 } else {
-                    groupListView
+                    VStack(spacing: 0) {
+                        filterBar
+                        Divider()
+                        groupListView
+                        statusBar
+                    }
                 }
             case .error(let message):
                 errorView(message)
@@ -310,7 +285,9 @@ struct DuplicateFinderView: View {
                     // Clean button
                     if let dropZone = dropZoneViewModel, !viewModel.selectedForDeletion.isEmpty {
                         Button {
-                            viewModel.sendToDropZone(dropZone: dropZone)
+                            if let tree {
+                                viewModel.sendToDropZone(dropZone: dropZone, tree: tree)
+                            }
                         } label: {
                             Label(
                                 "Clean Selected (\(viewModel.selectedForDeletionSize.formattedSize))",
@@ -323,9 +300,7 @@ struct DuplicateFinderView: View {
 
                 Button {
                     if let tree {
-                        Task {
-                            await viewModel.startScan(tree: tree)
-                        }
+                        viewModel.startScan(tree: tree)
                     }
                 } label: {
                     Label("Scan", systemImage: "magnifyingglass")
@@ -335,6 +310,93 @@ struct DuplicateFinderView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    // MARK: Filter Bar
+
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            // Search
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                TextField("Search duplicates...", text: $viewModel.searchText)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                if !viewModel.searchText.isEmpty {
+                    Button {
+                        viewModel.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            .frame(maxWidth: 220)
+
+            // Min size menu
+            Menu {
+                Button("4 KB") { viewModel.filterOptions.minFileSize = 4096 }
+                Button("64 KB") { viewModel.filterOptions.minFileSize = 65_536 }
+                Button("1 MB") { viewModel.filterOptions.minFileSize = 1_048_576 }
+                Button("10 MB") { viewModel.filterOptions.minFileSize = 10_485_760 }
+                Button("100 MB") { viewModel.filterOptions.minFileSize = 104_857_600 }
+            } label: {
+                Label("Min: \(viewModel.filterOptions.minFileSize.formattedSize)", systemImage: "line.3.horizontal.decrease.circle")
+                    .font(.callout)
+            }
+
+            Spacer()
+
+            // Sort mode
+            Picker("Sort", selection: $viewModel.sortMode) {
+                ForEach(DuplicateSortMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 280)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: Status Bar
+
+    private var statusBar: some View {
+        HStack(spacing: 16) {
+            if let stats = viewModel.currentStats {
+                Text("\(stats.groupCount) groups")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(stats.totalDuplicateFiles) duplicates")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(stats.totalWastedSpace.formattedSize) wasted")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Spacer()
+
+            if !viewModel.selectedForDeletion.isEmpty {
+                Text("\(viewModel.selectedForDeletion.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(viewModel.selectedForDeletionSize.formattedSize)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     // MARK: Idle
@@ -407,9 +469,10 @@ struct DuplicateFinderView: View {
 
     private var groupListView: some View {
         List {
-            ForEach(viewModel.groups) { group in
+            ForEach(viewModel.filteredGroups) { group in
                 DuplicateGroupCard(
                     group: group,
+                    selectedFileIds: viewModel.selectedFileIds,
                     isExpanded: viewModel.expandedGroupId == group.id,
                     onToggleExpand: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -452,9 +515,7 @@ struct DuplicateFinderView: View {
                 .frame(maxWidth: 400)
             Button("Try Again") {
                 if let tree {
-                    Task {
-                        await viewModel.startScan(tree: tree)
-                    }
+                    viewModel.startScan(tree: tree)
                 }
             }
             .buttonStyle(.bordered)
@@ -468,6 +529,7 @@ struct DuplicateFinderView: View {
 
 struct DuplicateGroupCard: View {
     let group: DuplicateGroup
+    let selectedFileIds: Set<String>
     let isExpanded: Bool
     let onToggleExpand: () -> Void
     let onToggleFileSelection: (String) -> Void
@@ -524,6 +586,7 @@ struct DuplicateGroupCard: View {
                 ForEach(group.files) { file in
                     DuplicateFileRow(
                         file: file,
+                        isSelected: selectedFileIds.contains(file.id),
                         onToggleSelection: { onToggleFileSelection(file.id) }
                     )
                 }
@@ -572,12 +635,13 @@ struct DuplicateGroupCard: View {
 
 struct DuplicateFileRow: View {
     let file: DuplicateFile
+    let isSelected: Bool
     let onToggleSelection: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
             Toggle(isOn: Binding(
-                get: { file.isSelected },
+                get: { isSelected },
                 set: { _ in onToggleSelection() }
             )) {
                 EmptyView()
@@ -590,7 +654,7 @@ struct DuplicateFileRow: View {
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.head)
-                    .foregroundStyle(file.isSelected ? .primary : .secondary)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
                     .help(file.path)
 
                 Text(file.modificationDate, style: .date)
@@ -600,7 +664,7 @@ struct DuplicateFileRow: View {
 
             Spacer()
 
-            if file.isSelected {
+            if isSelected {
                 Image(systemName: "trash")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -609,7 +673,7 @@ struct DuplicateFileRow: View {
         .padding(.leading, 42)
         .padding(.trailing, 12)
         .padding(.vertical, 4)
-        .background(file.isSelected ? Color.red.opacity(0.05) : Color.clear)
+        .background(isSelected ? Color.red.opacity(0.05) : Color.clear)
         .contentShape(Rectangle())
         .contextMenu {
             Button("Reveal in Finder") {

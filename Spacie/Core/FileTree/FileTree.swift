@@ -1244,4 +1244,44 @@ final class FileTree: @unchecked Sendable {
         let total = nodesBytes + poolBytes
         return (nodesBytes, poolBytes, total)
     }
+
+    // MARK: - Duplicate Detection
+
+    /// Groups file node indices by logical size for duplicate detection.
+    /// Single-pass O(N), one lock acquisition. Deduplicates hardlinks by inode.
+    /// - Parameters:
+    ///   - minSize: Minimum file size in bytes (default 4096).
+    ///   - excludeHardLinks: If true, skips files with the same inode.
+    /// - Returns: Dictionary mapping size -> array of (nodeIndex, inode) tuples.
+    ///            Only sizes with 2+ distinct entries are included.
+    func buildSizeBuckets(
+        minSize: UInt64 = 4096,
+        excludeHardLinks: Bool = true
+    ) -> [UInt64: [(index: UInt32, inode: UInt64)]] {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        var sizeMap: [UInt64: [(index: UInt32, inode: UInt64)]] = [:]
+        var seenInodes: [UInt64: Set<UInt64>] = [:]
+
+        for i in 1..<nodes.count {
+            let node = nodes[i]
+            guard !node.isDirectory,
+                  !node.isSymlink,
+                  !node.isVirtual,
+                  node.logicalSize >= minSize else { continue }
+
+            let size = node.logicalSize
+            let inode = node.inode
+
+            if excludeHardLinks && inode > 0 {
+                if seenInodes[size, default: []].contains(inode) { continue }
+                seenInodes[size, default: []].insert(inode)
+            }
+
+            sizeMap[size, default: []].append((index: UInt32(i), inode: inode))
+        }
+
+        return sizeMap.filter { $0.value.count > 1 }
+    }
 }

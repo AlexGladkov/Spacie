@@ -1,20 +1,54 @@
 import Foundation
 
+// MARK: - DuplicateFilterOptions
+
+/// Options controlling which files are considered during duplicate scanning.
+struct DuplicateFilterOptions: Sendable {
+    /// Minimum file size in bytes. Files smaller than this are skipped.
+    var minFileSize: UInt64 = 4096
+    /// If true, files sharing the same inode (hard links) are excluded from results.
+    var excludeHardLinks: Bool = true
+    /// If true, files inside .app/.framework bundles are excluded.
+    var excludePackageContents: Bool = true
+}
+
+// MARK: - DuplicateScanProgress
+
+/// Progress information emitted during the hashing phase of duplicate detection.
+struct DuplicateScanProgress: Sendable, Equatable {
+    let filesHashed: Int
+    let totalFiles: Int
+    let bytesHashed: UInt64
+    let currentFile: String
+
+    var fraction: Double {
+        totalFiles > 0 ? Double(filesHashed) / Double(totalFiles) : 0
+    }
+}
+
 // MARK: - DuplicateGroup
 
-struct DuplicateGroup: Identifiable, Sendable {
+struct DuplicateGroup: Identifiable, Sendable, Hashable {
     let id: String // hash-based identifier
     let fileSize: UInt64
     let files: [DuplicateFile]
     let hashLevel: HashLevel
 
-    /// Total space wasted (all copies except one)
+    /// Total space wasted (all copies except one).
     var wastedSpace: UInt64 {
         guard files.count > 1 else { return 0 }
         return fileSize * UInt64(files.count - 1)
     }
 
     var fileCount: Int { files.count }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    static func == (lhs: DuplicateGroup, rhs: DuplicateGroup) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 // MARK: - DuplicateFile
@@ -26,7 +60,7 @@ struct DuplicateFile: Identifiable, Sendable, Hashable {
     let path: String
     let size: UInt64
     let modificationDate: Date
-    var isSelected: Bool // selected for deletion
+    let treeIndex: UInt32
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
@@ -62,17 +96,15 @@ enum HashLevel: Int, Sendable, Comparable {
 enum DuplicateScanState: Sendable, Equatable {
     case idle
     case groupingBySize
-    case computingPartialHash(progress: Double)
-    case computingFullHash(groupId: String, progress: Double)
-    case completed(stats: DuplicateStats)
+    case hashing(DuplicateScanProgress)
+    case completed(DuplicateStats)
     case error(String)
 
     static func == (lhs: DuplicateScanState, rhs: DuplicateScanState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle): true
         case (.groupingBySize, .groupingBySize): true
-        case (.computingPartialHash(let a), .computingPartialHash(let b)): a == b
-        case (.computingFullHash(let ag, let ap), .computingFullHash(let bg, let bp)): ag == bg && ap == bp
+        case (.hashing(let a), .hashing(let b)): a == b
         case (.completed(let a), .completed(let b)): a == b
         case (.error(let a), .error(let b)): a == b
         default: false
@@ -105,4 +137,14 @@ enum AutoSelectStrategy: String, Sendable, CaseIterable, Identifiable {
         case .keepShortestPath: "Keep Shortest Path"
         }
     }
+}
+
+// MARK: - DuplicateSortMode
+
+enum DuplicateSortMode: String, CaseIterable, Identifiable {
+    case wastedSpace = "Wasted Space"
+    case count = "Count"
+    case fileSize = "File Size"
+
+    var id: String { rawValue }
 }

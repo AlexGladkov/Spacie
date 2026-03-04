@@ -103,6 +103,9 @@ final class AppViewModel {
     /// View model for the Large Files panel.
     let largeFilesVM = LargeFilesViewModel()
 
+    /// View model for the Duplicate Finder panel.
+    let duplicateFinderVM = DuplicateFinderViewModel()
+
     /// Whether the FDA banner should be displayed.
     var showFDABanner: Bool = false
 
@@ -962,7 +965,16 @@ struct ContentView: View {
                 }
             }
         case .duplicates:
-            placeholderPanel(name: "Duplicates", icon: "doc.on.doc.fill")
+            DuplicateFinderView(
+                viewModel: viewModel.duplicateFinderVM,
+                dropZoneViewModel: nil,
+                tree: viewModel.tree
+            )
+            .onChange(of: viewModel.scanState) { _, state in
+                if case .completed = state, let tree = viewModel.tree {
+                    viewModel.duplicateFinderVM.onTreeChanged(tree: tree)
+                }
+            }
         case .smartCategories:
             placeholderPanel(name: "Smart Categories", icon: "wand.and.stars")
         case .oldFiles:
