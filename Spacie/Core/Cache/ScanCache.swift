@@ -85,22 +85,30 @@ final class ScanCache: @unchecked Sendable {
 
     // MARK: - Static Cache Directory
 
-    /// Returns the cache directory URL, creating it if necessary.
-    private static var cacheDirectoryURL: URL {
+    /// Returns the cache directory URL (without side effects).
+    ///
+    /// Does **not** create the directory — call ``ensureCacheDirectoryExists()``
+    /// before any write operation. This getter is safe to call from SwiftUI body
+    /// closures and other hot paths.
+    private static let cacheDirectoryURL: URL = {
         let cachesDirectory = FileManager.default.urls(
             for: .cachesDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
 
-        let cacheDir = cachesDirectory
+        return cachesDirectory
             .appendingPathComponent(cacheDirectoryName, isDirectory: true)
+    }()
 
+    /// Creates the cache directory if it does not already exist.
+    ///
+    /// Call this once before any write operation (``save``, ``saveDirectorySizes``,
+    /// WAL append). Idempotent — safe to call multiple times.
+    private static func ensureCacheDirectoryExists() {
         try? FileManager.default.createDirectory(
-            at: cacheDir,
+            at: cacheDirectoryURL,
             withIntermediateDirectories: true
         )
-
-        return cacheDir
     }
 
     /// Returns the cache file URL for a given volume ID.
@@ -420,6 +428,9 @@ final class ScanCache: @unchecked Sendable {
             data.append(contentsOf: rawBuffer)
         }
 
+        // Ensure the cache directory exists before writing
+        Self.ensureCacheDirectoryExists()
+
         // Write atomically
         try data.write(to: cacheFileURL, options: [.atomic])
 
@@ -600,6 +611,7 @@ final class ScanCache: @unchecked Sendable {
     /// - Parameter sizes: Dictionary mapping absolute directory paths to their total logical byte size.
     /// - Throws: Encoding or file I/O errors.
     func saveDirectorySizes(_ sizes: [String: UInt64]) throws {
+        Self.ensureCacheDirectoryExists()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(sizes)

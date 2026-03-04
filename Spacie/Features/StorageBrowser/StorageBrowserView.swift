@@ -29,10 +29,14 @@ struct StorageBrowserView: View {
     var scanPhase: ScanPhase = .red
     /// Monotonic version counter from AppViewModel — forces re-render when tree data changes.
     var treeVersion: Int = 0
+    /// Called after a node is successfully moved to Trash (with the trashed node's index).
+    var onNodeTrashed: ((UInt32) -> Void)? = nil
+    /// Total used space on the scanned volume; passed to the donut chart to show coverage %.
+    var volumeUsedSpace: UInt64? = nil
 
     var body: some View {
         HStack(spacing: 0) {
-            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, scanPhase: scanPhase, treeVersion: treeVersion)
+            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, scanPhase: scanPhase, treeVersion: treeVersion, onNodeTrashed: onNodeTrashed)
 
             Divider()
 
@@ -41,7 +45,8 @@ struct StorageBrowserView: View {
                 rootIndex: state.currentRootIndex,
                 sizeMode: sizeMode,
                 useEntryCount: state.useEntryCount,
-                treeVersion: treeVersion
+                treeVersion: treeVersion,
+                volumeUsedSpace: volumeUsedSpace
             )
             .frame(width: 320)
         }
@@ -58,6 +63,7 @@ private struct FolderListPanel: View {
     let sizeMode: SizeMode
     var scanPhase: ScanPhase = .red
     var treeVersion: Int = 0
+    var onNodeTrashed: ((UInt32) -> Void)? = nil
 
     @State private var trashTargetIndex: UInt32?
     @State private var showTrashConfirmation = false
@@ -117,7 +123,6 @@ private struct FolderListPanel: View {
                 }
             }
         }
-        .id(treeVersion)
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .alert("Move to Trash?", isPresented: $showTrashConfirmation) {
@@ -176,6 +181,8 @@ private struct FolderListPanel: View {
             do {
                 let manager = TrashManager()
                 _ = try await manager.moveToTrash(url: url)
+                // Notify parent so it removes the node from the tree and bumps treeVersion
+                onNodeTrashed?(index)
             } catch {
                 trashError = error.localizedDescription
                 showTrashError = true
@@ -249,8 +256,11 @@ private struct FileTypePanel: View {
     let sizeMode: SizeMode
     let useEntryCount: Bool
     var treeVersion: Int = 0
+    /// Total used space on the volume — shown in donut center as coverage % when at tree root.
+    var volumeUsedSpace: UInt64? = nil
 
     @State private var distribution: [TypeEntry] = []
+    @State private var showCoveragePopover = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -318,9 +328,35 @@ private struct FileTypePanel: View {
                     let totalSize = distribution.reduce(UInt64(0)) { $0 + $1.size }
                     Text(totalSize.formattedSize)
                         .font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text("\(distribution.count) types")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    if let volUsed = volumeUsedSpace, volUsed > 0,
+                       rootIndex == tree.rootIndex {
+                        let pct = Int(min(100.0, Double(totalSize) / Double(volUsed) * 100))
+                        let unaccounted = volUsed > totalSize ? volUsed - totalSize : 0
+                        Button {
+                            showCoveragePopover = true
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("\(pct)% of volume")
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showCoveragePopover, arrowEdge: .bottom) {
+                            CoverageInfoPopover(
+                                scannedSize: totalSize,
+                                volumeUsedSpace: volUsed,
+                                unaccountedSize: unaccounted
+                            )
+                        }
+                    } else {
+                        Text("\(distribution.count) types")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .position(center)
             }
@@ -396,13 +432,17 @@ private struct FileTypePanel: View {
         var stack: [UInt32] = tree.children(of: rootIndex)
         while let index = stack.popLast() {
             guard let node = tree.node(at: index) else { continue }
-            if !node.isDirectory {
+            // Virtual directories (e.g. Smart Scan "Other" placeholder) are counted
+            // directly like files — they represent unscanned space and have no children.
+            // Real directories are recursed into but their own size is skipped (it's
+            // already the sum of their children after aggregateSizes()).
+            if !node.isDirectory || node.isVirtual {
                 switch sizeMode {
                 case .logical:  buckets[Int(node.fileType.rawValue)] += node.logicalSize
                 case .physical: buckets[Int(node.fileType.rawValue)] += node.physicalSize
                 }
             }
-            if node.isDirectory {
+            if node.isDirectory && !node.isVirtual {
                 stack.append(contentsOf: tree.children(of: index))
             }
         }
@@ -454,6 +494,93 @@ private struct FileTypeSlice: Identifiable {
     let startAngle: Double
     let endAngle: Double
     let color: Color
+}
+
+// MARK: - Coverage Info Popover
+
+/// Explains why the scanned file total is less than the volume's used space.
+private struct CoverageInfoPopover: View {
+    let scannedSize: UInt64
+    let volumeUsedSpace: UInt64
+    let unaccountedSize: UInt64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+
+            // Header
+            HStack(spacing: 6) {
+                Image(systemName: "chart.pie.fill")
+                    .foregroundStyle(.blue)
+                Text("Partial scan coverage")
+                    .font(.headline)
+            }
+
+            // Summary line
+            Text("Spacie found **\(scannedSize.formattedSize)** in files, but the volume reports **\(volumeUsedSpace.formattedSize)** used. The remaining **\(unaccountedSize.formattedSize)** is not visible because:")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            // Reasons
+            VStack(alignment: .leading, spacing: 10) {
+                reasonRow(
+                    icon: "lock.fill",
+                    color: .orange,
+                    title: "Protected directories",
+                    detail: "Mail, Messages, Photos and other apps require Full Disk Access."
+                )
+                reasonRow(
+                    icon: "externaldrive.fill",
+                    color: Color(.systemGray),
+                    title: "System volumes",
+                    detail: "Preboot, Recovery and VM (swap file) are OS internals, excluded intentionally."
+                )
+                reasonRow(
+                    icon: "camera.filters",
+                    color: .blue,
+                    title: "APFS snapshots",
+                    detail: "OS update history snapshots occupy space but have no files to traverse."
+                )
+            }
+
+            Divider()
+
+            // Action
+            HStack {
+                Image(systemName: "gear.badge.checkmark")
+                    .foregroundStyle(.green)
+                Button("Grant Full Disk Access…") {
+                    NSWorkspace.shared.open(
+                        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+                    )
+                }
+                .buttonStyle(.link)
+                .font(.callout)
+            }
+        }
+        .padding(18)
+        .frame(width: 300)
+    }
+
+    private func reasonRow(icon: String, color: Color, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .font(.callout)
+                .frame(width: 18, alignment: .center)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
 }
 
 // MARK: - Donut Slice Shape

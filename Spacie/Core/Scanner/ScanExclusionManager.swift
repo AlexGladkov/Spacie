@@ -17,14 +17,24 @@ struct ScanExclusionRules: Sendable {
     let excludedBasenames: Set<String>
     let excludedPathPrefixes: [String]
 
+    /// Pre-computed `excludedPathPrefixes[i] + "/"` strings.
+    /// Avoids creating a temporary string on every `shouldExclude` call (millions of times).
+    private let _prefixesWithSlash: [String]
+
+    init(excludedBasenames: Set<String>, excludedPathPrefixes: [String]) {
+        self.excludedBasenames = excludedBasenames
+        self.excludedPathPrefixes = excludedPathPrefixes
+        self._prefixesWithSlash = excludedPathPrefixes.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+    }
+
     /// Returns `true` when the directory at `path` with the given `name` should
     /// be skipped entirely (including its subtree).
     func shouldExclude(name: String, path: String) -> Bool {
         if excludedBasenames.contains(name) {
             return true
         }
-        for prefix in excludedPathPrefixes {
-            if path == prefix || path.hasPrefix(prefix + "/") {
+        for i in excludedPathPrefixes.indices {
+            if path == excludedPathPrefixes[i] || path.hasPrefix(_prefixesWithSlash[i]) {
                 return true
             }
         }
@@ -89,11 +99,24 @@ enum ScanExclusionManager {
             "/System/Volumes/iSCPreboot",
             "/System/Volumes/Hardware",
 
-            "\(home)/Library/Caches",
-            "\(home)/Library/Developer/CoreSimulator",
+            // User Xcode build artifacts — large generated output, not user content.
             "\(home)/Library/Developer/Xcode/DerivedData",
+
+            // ~/Library/Caches and CoreSimulator are removed from exclusions:
+            // they contain real user data (simulator runtimes, app caches) that users
+            // should be able to see in Spacie.
+            // Simulator APFS sub-volumes (/Library/Developer/CoreSimulator/Volumes/*)
+            // are on separate disk devices (disk5s1, disk7s1…) and are now stopped
+            // naturally by the cross-device check (crossMountPoints: false).
+
             "/private/var/folders",
             "/private/var/db",
+
+            // System temporary directories — contain OS/app session data with no
+            // value for disk-usage analysis. /private/tmp is on the same device
+            // as / so the cross-mount-point check does not exclude it automatically.
+            "/private/tmp",
+            "/tmp",
         ]
     }()
 

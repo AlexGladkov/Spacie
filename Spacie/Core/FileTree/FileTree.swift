@@ -210,7 +210,13 @@ final class FileTree: @unchecked Sendable {
         }
 
         nodes.append(node)
-        pathIndex[raw.path] = newIndex
+        // Only index directories — files are never looked up by path.
+        // Indexing all files would grow pathIndex to O(total files), consuming
+        // gigabytes of memory on large volumes (e.g. 2 GB for 16M files at 100-char paths).
+        // Directories must remain indexed for parent resolution and incremental rescans.
+        if raw.flags.contains(.isDirectory) {
+            pathIndex[raw.path] = newIndex
+        }
 
         return newIndex
     }
@@ -300,31 +306,60 @@ final class FileTree: @unchecked Sendable {
     /// Aggregates sizes from leaf nodes up to the root.
     ///
     /// Must be called after all nodes have been inserted and before
-    /// ``finalizeBuild()``. Walks the tree bottom-up, summing child sizes
-    /// into their parent directories.
+    /// ``finalizeBuild()``. Traverses the tree via the children linked list
+    /// (BFS from root) so that only nodes actually reachable from the root are
+    /// counted. This keeps the result consistent with ``buildDistribution()``
+    /// and prevents WAL-replaced nodes (which remain in the arena with a valid
+    /// `parentIndex` but are unlinked from the children chain) from
+    /// double-counting alongside their replacements.
+    ///
+    /// **Virtual nodes** (``FileNodeFlags/isVirtual``) are excluded from the
+    /// directory-size reset so their externally-assigned sizes (e.g. the Smart
+    /// Scan "Other" placeholder representing unscanned space) are preserved and
+    /// propagated to the root correctly.
     func aggregateSizes() {
         os_unfair_lock_lock(&_lock)
         defer { os_unfair_lock_unlock(&_lock) }
 
         let count = nodes.count
+        guard count > 1 else { return }
 
-        // Reset directory sizes to zero before re-aggregating.
-        // This makes the method idempotent — safe to call multiple times
-        // (e.g., during incremental Phase 2 updates).
-        for i in 1..<count where nodes[i].isDirectory {
+        // Reset real directory sizes to zero before re-aggregating.
+        // Virtual directories (Smart Scan "Other" node) keep their externally-set size.
+        for i in 1..<count where nodes[i].isDirectory && !nodes[i].isVirtual {
             nodes[i].logicalSize = 0
             nodes[i].physicalSize = 0
         }
 
-        // Process nodes in reverse order. Since children are always inserted
-        // after their parents (or at higher indices due to post-order), iterating
-        // backwards naturally processes children before parents.
-        for i in stride(from: count - 1, through: 1, by: -1) {
-            let parentIdx = Int(nodes[i].parentIndex)
-            guard parentIdx > 0, parentIdx < count else { continue }
+        // BFS from root to collect all nodes reachable via the children linked list.
+        // Processing them in reverse BFS order (leaves first) ensures each node's
+        // accumulated size is complete before it is added to its parent.
+        var bfsOrder = [UInt32]()
+        bfsOrder.reserveCapacity(count - 1)
+        var queue = [UInt32]()
+        queue.reserveCapacity(count - 1)
+        queue.append(1) // root is always at index 1
+        var head = 0
+        while head < queue.count {
+            let current = queue[head]
+            head += 1
+            bfsOrder.append(current)
+            let i = Int(current)
+            guard i > 0, i < count, nodes[i].isDirectory else { continue }
+            var childIdx = nodes[i].firstChildIndex
+            while childIdx != 0 && Int(childIdx) < count {
+                queue.append(childIdx)
+                childIdx = nodes[Int(childIdx)].nextSiblingIndex
+            }
+        }
 
-            nodes[parentIdx].logicalSize &+= nodes[i].logicalSize
-            nodes[parentIdx].physicalSize &+= nodes[i].physicalSize
+        // Process in reverse BFS order: children before parents.
+        for j in stride(from: bfsOrder.count - 1, through: 0, by: -1) {
+            let current = Int(bfsOrder[j])
+            let parentIdx = Int(nodes[current].parentIndex)
+            guard parentIdx > 0, parentIdx < count else { continue }
+            nodes[parentIdx].logicalSize &+= nodes[current].logicalSize
+            nodes[parentIdx].physicalSize &+= nodes[current].physicalSize
         }
     }
 
@@ -753,6 +788,22 @@ final class FileTree: @unchecked Sendable {
         return nodes[i].logicalSize
     }
 
+    /// Returns the logical size of the node identified by the given path.
+    ///
+    /// Only works during the build phase while `pathIndex` is populated.
+    /// Returns 0 if the path is not found or the tree is finalized.
+    ///
+    /// - Parameter path: The full file-system path of the node.
+    /// - Returns: The logical size in bytes, or 0 if the path is not found.
+    func logicalSize(ofPath path: String) -> UInt64 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        guard let idx = pathIndex[path] else { return 0 }
+        let i = Int(idx)
+        guard i > 0, i < nodes.count else { return 0 }
+        return nodes[i].logicalSize
+    }
+
     /// Returns the physical size of the node at the given index.
     ///
     /// - Parameter index: The node index.
@@ -860,6 +911,67 @@ final class FileTree: @unchecked Sendable {
         }
     }
 
+    // MARK: - Node Removal
+
+    /// Removes the node at the given index from the tree.
+    ///
+    /// Unlinks the node from its parent's child list, zeroes its sizes so that
+    /// a subsequent ``aggregateSizes()`` reflects the deletion, and removes its
+    /// path from the ``pathIndex``. The node slot in the flat array is left in
+    /// place (arena approach — no compaction).
+    ///
+    /// - Parameter index: The node index to remove.
+    /// - Returns: The logical size of the removed node (for callers that need to
+    ///   report deleted bytes), or 0 if the index was invalid.
+    @discardableResult
+    func removeNode(at index: UInt32) -> UInt64 {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        let i = Int(index)
+        guard i > 0, i < nodes.count else { return 0 }
+
+        let deletedSize = nodes[i].logicalSize
+
+        // Unlink from parent's child linked list
+        let parentIdx = Int(nodes[i].parentIndex)
+        if parentIdx > 0, parentIdx < nodes.count {
+            if nodes[parentIdx].firstChildIndex == index {
+                // Node is the first child — advance first child pointer
+                nodes[parentIdx].firstChildIndex = nodes[i].nextSiblingIndex
+            } else {
+                // Walk sibling chain to find the predecessor
+                var sibIdx = nodes[parentIdx].firstChildIndex
+                var safety = 0
+                let maxIter = nodes.count
+                while sibIdx != 0, Int(sibIdx) < nodes.count, safety < maxIter {
+                    if nodes[Int(sibIdx)].nextSiblingIndex == index {
+                        nodes[Int(sibIdx)].nextSiblingIndex = nodes[i].nextSiblingIndex
+                        break
+                    }
+                    sibIdx = nodes[Int(sibIdx)].nextSiblingIndex
+                    safety += 1
+                }
+            }
+            if nodes[parentIdx].childCount > 0 {
+                nodes[parentIdx].childCount -= 1
+            }
+        }
+
+        // Zero out the node so aggregateSizes() sees no contribution
+        nodes[i].logicalSize = 0
+        nodes[i].physicalSize = 0
+        nodes[i].nextSiblingIndex = 0
+        nodes[i].parentIndex = 0
+
+        // Remove from path index
+        // Walk pathIndex to find entries pointing to this index
+        let toRemove = pathIndex.filter { $0.value == index }.map(\.key)
+        for key in toRemove { pathIndex.removeValue(forKey: key) }
+
+        return deletedSize
+    }
+
     // MARK: - Serialization Support
 
     /// Provides read-only access to the raw node array for binary serialization.
@@ -926,26 +1038,38 @@ final class FileTree: @unchecked Sendable {
                 )
 
                 let childPath = parentPath == "/" ? "/" + childName : parentPath + "/" + childName
-                pathIndex[childPath] = childIdx
-                queue.append((childIdx, childPath))
+                if childNode.isDirectory {
+                    pathIndex[childPath] = childIdx
+                }
+                if childNode.isDirectory {
+                    queue.append((childIdx, childPath))
+                }
 
                 childIdx = childNode.nextSiblingIndex
             }
         }
     }
 
-    /// Applies a WAL patch: replaces the subtree of `dirPath` with nodes from the WAL entry.
+    /// Applies a WAL patch: replaces the children of `dirPath` with nodes from the WAL entry,
+    /// while **preserving the inner structure** of subdirectories that still exist in the WAL.
     ///
-    /// The WAL nodes reference names in their own string pool (provided as raw `Data`).
-    /// Each WAL node is converted to a ``RawFileNode`` and inserted via the standard
-    /// ``insertUnlocked(_:)`` path, which re-interns names into the tree's main ``StringPool``.
+    /// ## Strategy
+    /// WAL entries only capture one directory level at a time (flat list of direct children).
+    /// A naive bulk-replace would lose the entire subtree of every subdirectory, causing
+    /// aggregateSizes() to show those directories as empty.
     ///
-    /// Old children of the patched directory are unlinked (their `firstChildIndex` is zeroed).
-    /// The orphaned nodes remain in the arena and are cleaned up on the next blob compaction.
+    /// Instead, this method performs a *smart* replacement:
+    /// 1. Build a name → walNode map for O(1) lookup.
+    /// 2. Walk old children:
+    ///    - **Old dir still in WAL** → keep (preserve subtree, update metadata only).
+    ///    - **Old dir removed from WAL** → remove from pathIndex + orphan.
+    ///    - **Old file** → orphan unconditionally (WAL re-inserts files with fresh sizes).
+    /// 3. Reset dirIdx's child list and re-link kept directories.
+    /// 4. Insert new WAL files and any newly-appearing directories.
     ///
     /// - Parameters:
     ///   - dirPath: The full path of the directory whose children should be replaced.
-    ///   - walNodes: The ``FileNode`` structs from the WAL entry.
+    ///   - walNodes: The ``FileNode`` structs from the WAL entry (flat, direct children only).
     ///   - walStringPoolData: Raw bytes of the ``StringPool`` for the WAL nodes.
     func applyWALPatch(dirPath: String, walNodes: [FileNode], walStringPoolData: Data) {
         os_unfair_lock_lock(&_lock)
@@ -963,30 +1087,73 @@ final class FileTree: @unchecked Sendable {
             return
         }
 
-        // 2. Remove old children from pathIndex (before unlinking)
-        removeSubtreeFromPathIndex(at: dirIdx)
+        // 2. Build name → walNode map for O(1) lookup during the old-children walk
+        let walPool = StringPool(deserializedFrom: walStringPoolData)
+        var walByName: [String: FileNode] = [:]
+        walByName.reserveCapacity(walNodes.count)
+        for walNode in walNodes {
+            let name = walPool.getString(offset: walNode.nameOffset, length: walNode.nameLength)
+            walByName[name] = walNode
+        }
 
-        // 3. Unlink old children — orphaned nodes stay in arena
+        // 3. Walk old children: keep dirs that still exist in the WAL; orphan everything else
+        var keptDirIndices: [Int] = []
+        var keptDirNames: Set<String> = []
+
+        var childIdx = nodes[dirIdx].firstChildIndex
+        while childIdx != 0 && Int(childIdx) < nodes.count {
+            let ci = Int(childIdx)
+            let next = nodes[ci].nextSiblingIndex
+            let childName = stringPool.getString(
+                offset: nodes[ci].nameOffset,
+                length: nodes[ci].nameLength
+            )
+
+            if nodes[ci].isDirectory {
+                if let walNode = walByName[childName] {
+                    // Dir still present in WAL — preserve its subtree, refresh metadata only
+                    if walNode.dirMtime != 0 { nodes[ci].dirMtime = walNode.dirMtime }
+                    if walNode.inode   != 0 { nodes[ci].inode    = walNode.inode   }
+                    if walNode.modTime != 0 { nodes[ci].modTime  = walNode.modTime }
+                    keptDirIndices.append(ci)
+                    keptDirNames.insert(childName)
+                } else {
+                    // Dir removed from WAL — clean up pathIndex and orphan
+                    let childPath = dirPath == "/" ? "/" + childName : dirPath + "/" + childName
+                    pathIndex.removeValue(forKey: childPath)
+                    removeSubtreeFromPathIndex(at: ci)
+                    nodes[ci].parentIndex = 0
+                }
+            } else {
+                // File — orphan unconditionally; WAL re-inserts files with fresh sizes
+                nodes[ci].parentIndex = 0
+            }
+
+            childIdx = next
+        }
+
+        // 4. Detach all old children from dirIdx
         nodes[dirIdx].firstChildIndex = 0
         nodes[dirIdx].childCount = 0
 
-        // 4. Insert new nodes from the WAL
-        let walPool = StringPool(deserializedFrom: walStringPoolData)
+        // 5. Re-link kept directories (their inner subtrees remain intact)
+        for idx in keptDirIndices {
+            nodes[idx].parentIndex = UInt32(dirIdx)
+            nodes[idx].nextSiblingIndex = nodes[dirIdx].firstChildIndex
+            nodes[dirIdx].firstChildIndex = UInt32(idx)
+            nodes[dirIdx].childCount &+= 1
+        }
 
+        // 6. Insert new WAL nodes: files and newly-appearing directories
+        //    (skip directories we already kept above — their subtrees are preserved)
         for walNode in walNodes {
-            // Resolve the node's name from the WAL StringPool
-            let name = walPool.getString(
-                offset: walNode.nameOffset,
-                length: walNode.nameLength
-            )
+            let name = walPool.getString(offset: walNode.nameOffset, length: walNode.nameLength)
+
+            if walNode.isDirectory && keptDirNames.contains(name) {
+                continue // Already re-linked in step 5
+            }
 
             let childPath = dirPath == "/" ? "/" + name : dirPath + "/" + name
-
-            // Determine the parent path for this node.
-            // WAL nodes are stored flat — all are direct children of the patched directory.
-            // Their parentIndex values are meaningless in the main tree context.
-            let parentPath = dirPath
-
             let raw = RawFileNode(
                 name: name,
                 path: childPath,
@@ -997,11 +1164,10 @@ final class FileTree: @unchecked Sendable {
                 modTime: walNode.modTime,
                 inode: walNode.inode,
                 depth: 0, // depth is not used by insertUnlocked
-                parentPath: parentPath,
+                parentPath: dirPath,
                 entryCount: walNode.entryCount,
                 dirMtime: walNode.dirMtime
             )
-
             insertUnlocked(raw)
         }
     }
@@ -1020,15 +1186,18 @@ final class FileTree: @unchecked Sendable {
             var childIdx = nodes[current].firstChildIndex
             while childIdx != 0 && Int(childIdx) < nodes.count {
                 let childIndex = Int(childIdx)
-                stack.append(childIndex)
-                let childPath = _fullPath(of: childIdx)
-                pathIndex.removeValue(forKey: childPath)
+                // Only directories are in pathIndex; skip files entirely.
+                if nodes[childIndex].isDirectory {
+                    stack.append(childIndex)
+                    let childPath = _fullPath(of: childIdx)
+                    pathIndex.removeValue(forKey: childPath)
+                }
                 childIdx = nodes[childIndex].nextSiblingIndex
             }
         }
     }
 
-    // MARK: - Subscript Access
+// MARK: - Subscript Access
 
     /// Provides direct subscript access to the underlying ``FileNode`` at the given index.
     ///

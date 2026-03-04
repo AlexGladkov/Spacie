@@ -107,6 +107,10 @@ final class ShallowScanner: Sendable {
             WorkItem(path: rootPath, name: rootName, depth: 0, isHidden: rootName.hasPrefix("."))
         ]
 
+        // --- childDirs buffer: allocated once, reused each iteration ---
+        var childDirs: [WorkItem] = []
+        childDirs.reserveCapacity(64)
+
         // --- Main loop ---
         while let item = stack.popLast() {
             // Cooperative cancellation
@@ -170,7 +174,7 @@ final class ShallowScanner: Sendable {
 
             // --- Single readdir() pass: count entries + collect subdirectories ---
             var entryCount: UInt32 = 0
-            var childDirs: [WorkItem] = []
+            childDirs.removeAll(keepingCapacity: true)
 
             while let entry = readdir(dir) {
                 // Skip "." and ".."

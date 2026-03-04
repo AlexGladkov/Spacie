@@ -374,8 +374,11 @@ final class ScanOrchestrator {
             tier1PathsSet = nil
         }
 
-        // Create the deep tree
-        let tree = FileTree()
+        // Create the deep tree with a capacity hint based on shallow tree.
+        // Typical volumes have ~10-20 files per directory; cap at 20M to avoid
+        // over-allocating on volumes with many empty dirs.
+        let estimatedNodes = min(shallowTree.nodeCount * 15, 20_000_000)
+        let tree = FileTree(estimatedNodeCount: estimatedNodes)
         await MainActor.run {
             self.deepTree = tree
         }
@@ -391,6 +394,11 @@ final class ScanOrchestrator {
         )
 
         var lastTreeUpdateTime = ContinuousClock.now
+        // Throttle onProgress UI callbacks independently of tree updates.
+        // With 16 workers each emitting ≤10 progress events/sec plus one per
+        // directory completion (~90/sec), unthrottled onProgress fires ~250/sec,
+        // causing excessive @Observable notifications and SwiftUI re-renders.
+        var lastProgressUITime = ContinuousClock.now
         var deepStats: ScanStats?
 
         // Track directory sizes for cache (path -> logical size after scan)
@@ -399,14 +407,29 @@ final class ScanOrchestrator {
         // Track which directory index we're at for remaining directories calculation
         var lastCompletedDirIndex = -1
 
+        // Batch buffer for insert — reduces lock acquisitions from once-per-file to once-per-batch.
+        // 4096 nodes per batch balances lock overhead vs latency.
+        let insertBatchSize = 4096
+        var insertBuffer: [RawFileNode] = []
+        insertBuffer.reserveCapacity(insertBatchSize)
+
         for await event in stream {
             if Task.isCancelled { return nil }
 
             switch event {
-            case .fileFound(let node):
-                tree.insert(node)
+            case .filesBatch(let nodes):
+                insertBuffer.append(contentsOf: nodes)
+                if insertBuffer.count >= insertBatchSize {
+                    tree.insertBatch(insertBuffer)
+                    insertBuffer.removeAll(keepingCapacity: true)
+                }
 
             case .directoryCompleted(let path, let dirIndex, _):
+                // Flush pending nodes before processing directory completion
+                if !insertBuffer.isEmpty {
+                    tree.insertBatch(insertBuffer)
+                    insertBuffer.removeAll(keepingCapacity: true)
+                }
                 lastCompletedDirIndex = dirIndex
 
                 // Throttle tree update callbacks to max 1 per 2 seconds.
@@ -420,21 +443,22 @@ final class ScanOrchestrator {
                 if elapsed >= .seconds(Self.treeUpdateThrottleInterval) {
                     lastTreeUpdateTime = now
                     tree.aggregateSizes()
-                    directorySizeMap[path] = tree.logicalSize(of: tree.rootIndex)
-                    await MainActor.run {
-                        self.onTreeUpdate?(tree)
-                    }
+                    directorySizeMap[path] = tree.logicalSize(ofPath: path)
+                    self.onTreeUpdate?(tree)
                 }
 
             case .progress(let progress):
-                await MainActor.run {
+                // Throttle UI updates to ≤10/sec. Without this, 16 workers × 10/sec
+                // plus per-directory completion events produce ~250 onProgress calls/sec,
+                // flooding the @Observable machinery and causing UI jank.
+                let nowP = ContinuousClock.now
+                if nowP - lastProgressUITime >= .milliseconds(500) {
+                    lastProgressUITime = nowP
                     self.onProgress?(progress)
                 }
 
             case .restricted:
-                await MainActor.run {
-                    self.onRestricted?()
-                }
+                self.onRestricted?()
 
             case .error:
                 break
@@ -443,6 +467,11 @@ final class ScanOrchestrator {
                 deepStats = stats
 
             case .smartThresholdReached(let coverage, let scannedBytes):
+                // Flush pending nodes before finalizing
+                if !insertBuffer.isEmpty {
+                    tree.insertBatch(insertBuffer)
+                    insertBuffer.removeAll(keepingCapacity: true)
+                }
                 // Smart Scan threshold reached: finalize partial tree
                 tree.aggregateSizes()
 
@@ -494,6 +523,12 @@ final class ScanOrchestrator {
 
         if Task.isCancelled { return nil }
 
+        // Flush any remaining nodes in the insert buffer
+        if !insertBuffer.isEmpty {
+            tree.insertBatch(insertBuffer)
+            insertBuffer.removeAll(keepingCapacity: true)
+        }
+
         // Full scan completed (no threshold reached)
         tree.aggregateSizes()
         tree.diagnosticDump()
@@ -538,17 +573,28 @@ final class ScanOrchestrator {
                 smartScanTier1Paths: nil
             )
 
+            var rescanBuffer: [RawFileNode] = []
+            rescanBuffer.reserveCapacity(512)
+
             for await event in stream {
                 if Task.isCancelled { break }
 
                 switch event {
-                case .fileFound(let node):
-                    tree.insert(node)
+                case .filesBatch(let nodes):
+                    rescanBuffer.append(contentsOf: nodes)
+                    if rescanBuffer.count >= 512 {
+                        tree.insertBatch(rescanBuffer)
+                        rescanBuffer.removeAll(keepingCapacity: true)
+                    }
 
                 case .directoryCompleted:
-                    tree.aggregateSizes()
-
-                    // Update virtual "Other" size based on new scanned data
+                    // Flush pending nodes before updating UI
+                    if !rescanBuffer.isEmpty {
+                        tree.insertBatch(rescanBuffer)
+                        rescanBuffer.removeAll(keepingCapacity: true)
+                    }
+                    // aggregateSizes() is O(N) — deferred to after the loop.
+                    // Use the pre-aggregation root size as an approximation for "Other" sizing.
                     let scanned = tree.logicalSize(of: tree.rootIndex)
                     let used = estimatedUsed
                     let newOther = max(0, Int64(used) - Int64(scanned))
@@ -571,6 +617,21 @@ final class ScanOrchestrator {
                 default:
                     break
                 }
+            }
+
+            // Flush any remaining nodes and aggregate once after all directories are processed
+            if !rescanBuffer.isEmpty {
+                tree.insertBatch(rescanBuffer)
+                rescanBuffer.removeAll(keepingCapacity: true)
+            }
+            tree.aggregateSizes()
+
+            // Final UI update with correct aggregated sizes
+            let finalScanned = tree.logicalSize(of: tree.rootIndex)
+            let finalOther = max(0, Int64(estimatedUsed) - Int64(finalScanned))
+            tree.updateVirtualOtherSize(UInt64(finalOther))
+            await MainActor.run {
+                self.onTreeUpdate?(tree)
             }
         }
     }

@@ -154,20 +154,22 @@ enum FileType: UInt8, Sendable, CaseIterable, Identifiable {
     /// returns `.other`. On macOS, many large files lack extensions — Mach-O
     /// binaries in .app bundles, system executables, framework internals.
     static func fromContext(path: String) -> FileType {
-        // Files inside package bundles → application
-        if path.contains(".app/") || path.contains(".framework/")
-            || path.contains(".bundle/") || path.contains(".plugin/")
-            || path.contains(".kext/") || path.contains(".xpc/")
-            || path.contains(".appex/") || path.contains(".prefpane/")
-            || path.contains(".saver/") || path.contains(".qlgenerator/")
-            || path.contains(".mdimporter/") {
-            return .application
-        }
-        // System binary/library paths → system
+        // Fast path: system binary/library paths (hasPrefix is O(prefix_len), faster than contains)
         if path.hasPrefix("/usr/") || path.hasPrefix("/bin/")
             || path.hasPrefix("/sbin/") || path.hasPrefix("/System/")
             || path.hasPrefix("/Library/Apple/") {
             return .system
+        }
+        // Package bundle check: only run if path contains a dot (most system paths don't)
+        if path.contains(".") {
+            if path.contains(".app/") || path.contains(".framework/")
+                || path.contains(".bundle/") || path.contains(".plugin/")
+                || path.contains(".kext/") || path.contains(".xpc/")
+                || path.contains(".appex/") || path.contains(".prefpane/")
+                || path.contains(".saver/") || path.contains(".qlgenerator/")
+                || path.contains(".mdimporter/") {
+                return .application
+            }
         }
         return .other
     }

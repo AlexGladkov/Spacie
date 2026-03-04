@@ -8,8 +8,10 @@ import Foundation
 /// directory-level progress tracking so the orchestrator can update
 /// the visualization incrementally.
 enum DeepScanEvent: Sendable {
-    /// A file or directory node found during deep scanning.
-    case fileFound(node: RawFileNode)
+    /// A batch of file/directory nodes found during a single directory's deep scan.
+    /// Replaces the former per-node `.fileFound` event: one batch per directory
+    /// keeps the AsyncStream buffer small and avoids O(N) `removeFirst()` cost.
+    case filesBatch(nodes: [RawFileNode])
     /// A directory's deep scan is complete.
     case directoryCompleted(path: String, dirIndex: Int, totalDirs: Int)
     /// Progress update with current Phase 2 stats.
@@ -105,10 +107,13 @@ final class ParallelScanState: @unchecked Sendable {
     ) -> ScanExclusionRules {
         if !isSmartScan { return baseRules }
 
+        // Capture only the minimal data needed under the lock; do filtering outside.
         os_unfair_lock_lock(&_lock)
-        defer { os_unfair_lock_unlock(&_lock) }
-
         let isTier1 = tier1Paths.contains(dirPath)
+        let completedSnapshot = completedPaths  // O(1) COW copy
+        os_unfair_lock_unlock(&_lock)
+
+        // All heavy filtering happens outside the lock
         if isTier1 {
             let filteredPrefixes = baseRules.excludedPathPrefixes.filter { prefix in
                 !(dirPath == prefix || dirPath.hasPrefix(prefix + "/"))
@@ -119,14 +124,13 @@ final class ParallelScanState: @unchecked Sendable {
             )
         } else {
             let dirWithSlash = dirPath.hasSuffix("/") ? dirPath : dirPath + "/"
-            let childExclusions = completedPaths.filter { completedPath in
+            let childExclusions = completedSnapshot.filter { completedPath in
                 let completedWithSlash = completedPath.hasSuffix("/") ? completedPath : completedPath + "/"
                 return completedWithSlash.hasPrefix(dirWithSlash)
             }
-            let augmentedPrefixes = baseRules.excludedPathPrefixes + Array(childExclusions)
             return ScanExclusionRules(
                 excludedBasenames: baseRules.excludedBasenames,
-                excludedPathPrefixes: augmentedPrefixes
+                excludedPathPrefixes: baseRules.excludedPathPrefixes + Array(childExclusions)
             )
         }
     }
@@ -194,6 +198,12 @@ final class ParallelScanState: @unchecked Sendable {
 /// The scanner does **not** build a tree itself. It emits ``DeepScanEvent``
 /// values that the caller (``ScanOrchestrator``) uses to populate a deep tree.
 ///
+/// ## Performance
+/// Each worker pre-allocates a single 256 KB buffer and reuses it across all
+/// directories, calling ``BulkDiskScanner/performScan(configuration:externalBuffer:emit:)``
+/// directly instead of going through `AsyncStream` + `Task.detached`. This eliminates
+/// per-directory Task/AsyncStream/buffer allocations (1.2M for a typical volume).
+///
 /// ## Cancellation
 /// Checks `Task.isCancelled` between each directory scan and cooperatively
 /// stops if the parent task has been cancelled.
@@ -210,6 +220,34 @@ final class ParallelScanState: @unchecked Sendable {
 /// }
 /// ```
 final class DeepScanner: Sendable {
+
+    /// Mutable box for capturing ``ScanStats`` from the synchronous `performScan` callback.
+    ///
+    /// Defined once at the class level to avoid repeated metadata allocations.
+    /// Each worker allocates one instance and resets it before each directory scan.
+    private final class StatsBox: @unchecked Sendable {
+        var stats: ScanStats?
+    }
+
+    /// Mutable box for accumulating file nodes during a single directory's `performScan` call.
+    ///
+    /// Each worker owns one instance; it is cleared and pre-sized before every directory.
+    /// After `performScan` returns, the accumulated nodes are yielded as a single
+    /// `.filesBatch` event instead of N individual `.fileFound` events. This keeps
+    /// the AsyncStream buffer small and prevents the O(N) `removeFirst()` from becoming
+    /// a bottleneck as the buffer grows.
+    private final class BatchBox: @unchecked Sendable {
+        var nodes: [RawFileNode] = []
+    }
+
+    /// Mutable box for tracking the last time a per-file progress event was emitted.
+    ///
+    /// Each worker owns one instance. Used to throttle in-directory `.progress`
+    /// events from `BulkDiskScanner` to ≤10/sec, preventing the AsyncStream buffer
+    /// from being flooded with ~12 M progress events during a full-volume scan.
+    private final class ProgressThrottleBox: @unchecked Sendable {
+        var lastEmitTime: ContinuousClock.Instant = .now
+    }
 
     // MARK: - Initialization
 
@@ -318,12 +356,33 @@ final class DeepScanner: Sendable {
             tier1Paths: smartScanTier1Paths
         )
 
-        let concurrency = min(6, ProcessInfo.processInfo.activeProcessorCount)
+        // I/O-bound work: allow up to 16 concurrent workers (or all available cores).
+        // Filesystem scanning is blocked on kernel I/O, so more workers can saturate
+        // the SSD's IOPS capacity beyond the CPU core count limit.
+        let concurrency = min(16, ProcessInfo.processInfo.activeProcessorCount)
 
         // --- Parallel directory scanning ---
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<concurrency {
                 group.addTask {
+                    // Pre-allocate a single 256 KB buffer per worker, reused
+                    // across ALL directories this worker processes. This
+                    // eliminates 1.2M malloc/free cycles for a typical volume.
+                    let workerBuffer = UnsafeMutableRawPointer.allocate(
+                        byteCount: BulkDiskScanner.bufferSize,
+                        alignment: MemoryLayout<UInt64>.alignment
+                    )
+                    defer { workerBuffer.deallocate() }
+
+                    // One StatsBox + BatchBox + ProgressThrottleBox per worker.
+                    let statsBox = StatsBox()
+                    let batchBox = BatchBox()
+                    // Throttle in-directory per-file progress events to max 10/sec per worker.
+                    // BulkDiskScanner emits one .progress per file (~12M total). Without
+                    // throttling these flood the AsyncStream and main thread. Per-directory
+                    // completion events are always emitted (see below).
+                    let progressThrottle = ProgressThrottleBox()
+
                     while let claimed = state.claimNextDirectory() {
                         if Task.isCancelled { break }
 
@@ -349,23 +408,39 @@ final class DeepScanner: Sendable {
                             exclusionRules: scopedExclusionRules
                         )
 
-                        // Use BulkDiskScanner with async stream.
-                        // Each scan runs on its own Task.detached, providing proper
-                        // cooperative scheduling with the Swift concurrency runtime.
-                        let scanner = BulkDiskScanner()
-                        let scanStream = scanner.scan(configuration: scopedConfig)
+                        // Reset per-directory state
+                        statsBox.stats = nil
+                        // Pre-size the batch to avoid repeated reallocations.
+                        // entryCount from the shallow scan is an upper bound (includes subdirs).
+                        batchBox.nodes.removeAll(keepingCapacity: false)
+                        batchBox.nodes.reserveCapacity(min(Int(dirInfo.entryCount), 16_384))
 
-                        for await event in scanStream {
-                            if Task.isCancelled { break }
-                            if state.isThresholdReached { break }
+                        // Direct synchronous call — no Task.detached, no AsyncStream,
+                        // no per-directory buffer allocation. The worker's pre-allocated
+                        // buffer is reused for every getattrlistbulk call.
+                        BulkDiskScanner.performScan(
+                            configuration: scopedConfig,
+                            externalBuffer: workerBuffer
+                        ) { event in
+                            if Task.isCancelled { return }
+                            if state.isThresholdReached { return }
 
                             switch event {
                             case .fileFound(let node):
-                                continuation.yield(.fileFound(node: node))
+                                // Collect into batch — yielded as ONE event after performScan returns.
+                                // This is the core fix for the O(N) AsyncStream.removeFirst() issue:
+                                // reduces events from ~16M (per-file) to ~1.26M (per-directory).
+                                batchBox.nodes.append(node)
 
                             case .progress(let progress):
-                                let snap = state.snapshot()
+                                // Throttle to max ~10 progress events per second per worker.
+                                // Without throttling, BulkDiskScanner emits one event per file
+                                // (~12M total), flooding the AsyncStream with O(N) drain cost.
                                 let now = ContinuousClock.now
+                                guard now - progressThrottle.lastEmitTime >= .milliseconds(100) else { break }
+                                progressThrottle.lastEmitTime = now
+
+                                let snap = state.snapshot()
                                 let totalElapsed = now - startTime
                                 let elapsedSeconds = Double(totalElapsed.components.seconds)
                                     + Double(totalElapsed.components.attoseconds) / 1e18
@@ -404,60 +479,75 @@ final class DeepScanner: Sendable {
                                 continuation.yield(.error(path: path, code: code, message: message))
 
                             case .completed(let stats):
-                                // Record completion in shared state
-                                let (coverage, shouldStop) = state.completeDirectory(
-                                    path: dirPath,
-                                    stats: stats
-                                )
-
-                                // Emit directory completed event
-                                continuation.yield(.directoryCompleted(
-                                    path: dirPath,
-                                    dirIndex: dirIndex,
-                                    totalDirs: totalDirs
-                                ))
-
-                                // Emit progress after directory completes
-                                let snap = state.snapshot()
-                                let now = ContinuousClock.now
-                                let totalElapsed = now - startTime
-                                let elapsedSeconds = Double(totalElapsed.components.seconds)
-                                    + Double(totalElapsed.components.attoseconds) / 1e18
-
-                                let deepProgress = Double(snap.completed) / Double(max(1, totalDirs))
-
-                                continuation.yield(.progress(ScanProgress(
-                                    filesScanned: snap.files,
-                                    directoriesScanned: snap.dirs,
-                                    skippedDirectories: snap.skipped,
-                                    totalLogicalSizeScanned: snap.logical,
-                                    totalPhysicalSizeScanned: snap.physical,
-                                    currentPath: dirPath,
-                                    elapsedTime: elapsedSeconds,
-                                    estimatedTotalFiles: nil,
-                                    phase: .yellow,
-                                    deepScanProgress: min(1.0, deepProgress),
-                                    deepScanDirsCompleted: snap.completed,
-                                    deepScanDirsTotal: UInt64(totalDirs),
-                                    coveragePercent: coverage,
-                                    scannedBytes: snap.logical,
-                                    estimatedUsedSpace: estimatedUsedSpace
-                                )))
-
-                                // Smart Scan threshold check
-                                if shouldStop {
-                                    continuation.yield(.smartThresholdReached(
-                                        coverage: coverage ?? 0.0,
-                                        scannedBytes: snap.logical
-                                    ))
-                                }
+                                // Capture for post-scan processing (performScan is synchronous)
+                                statsBox.stats = stats
 
                             case .directoryEntered, .directoryCompleted, .directorySkipped:
                                 break
                             }
                         }
 
-                        // If threshold reached, stop this worker
+                        // Yield the entire batch as ONE event (regardless of cancellation —
+                        // the consumer checks Task.isCancelled and discards if needed).
+                        if !batchBox.nodes.isEmpty {
+                            continuation.yield(.filesBatch(nodes: batchBox.nodes))
+                            batchBox.nodes = []  // Release memory; event now owns the array copy
+                        }
+
+                        // Process completion after performScan returns synchronously.
+                        // If stats is nil, the scan was cancelled or errored — skip.
+                        if let stats = statsBox.stats {
+                            // Record completion in shared state
+                            let (coverage, shouldStop) = state.completeDirectory(
+                                path: dirPath,
+                                stats: stats
+                            )
+
+                            // Emit directory completed event
+                            continuation.yield(.directoryCompleted(
+                                path: dirPath,
+                                dirIndex: dirIndex,
+                                totalDirs: totalDirs
+                            ))
+
+                            // Emit progress after directory completes
+                            let snap = state.snapshot()
+                            let now = ContinuousClock.now
+                            let totalElapsed = now - startTime
+                            let elapsedSeconds = Double(totalElapsed.components.seconds)
+                                + Double(totalElapsed.components.attoseconds) / 1e18
+
+                            let deepProgress = Double(snap.completed) / Double(max(1, totalDirs))
+
+                            continuation.yield(.progress(ScanProgress(
+                                filesScanned: snap.files,
+                                directoriesScanned: snap.dirs,
+                                skippedDirectories: snap.skipped,
+                                totalLogicalSizeScanned: snap.logical,
+                                totalPhysicalSizeScanned: snap.physical,
+                                currentPath: dirPath,
+                                elapsedTime: elapsedSeconds,
+                                estimatedTotalFiles: nil,
+                                phase: .yellow,
+                                deepScanProgress: min(1.0, deepProgress),
+                                deepScanDirsCompleted: snap.completed,
+                                deepScanDirsTotal: UInt64(totalDirs),
+                                coveragePercent: coverage,
+                                scannedBytes: snap.logical,
+                                estimatedUsedSpace: estimatedUsedSpace
+                            )))
+
+                            // Smart Scan threshold check
+                            if shouldStop {
+                                continuation.yield(.smartThresholdReached(
+                                    coverage: coverage ?? 0.0,
+                                    scannedBytes: snap.logical
+                                ))
+                                break
+                            }
+                        }
+
+                        // If threshold reached by another worker, stop this worker
                         if state.isThresholdReached { break }
                     }
                 }

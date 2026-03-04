@@ -152,7 +152,11 @@ struct InfoBarView: View {
     // MARK: - Scanning State
 
     private func scanningContent(progress: ScanProgress) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        // Use scanStartDate as the schedule origin so the timer fires at a stable
+        // 1-second cadence. With `from: .now`, every scanState change (20/sec) creates
+        // a new schedule starting from the current moment, causing the displayed
+        // elapsed time to stutter instead of ticking once per second.
+        TimelineView(.periodic(from: viewModel.scanStartDate ?? Date(), by: 1)) { context in
             HStack(spacing: 12) {
                 scanPhaseIndicator
 
@@ -195,6 +199,8 @@ struct InfoBarView: View {
 
             statLabel(icon: "doc", text: stats.totalFiles.formattedCount + " files")
             separator
+            statLabel(icon: "chart.bar.fill", text: scannedSizeLabel(stats: stats))
+            separator
 
             if let volume = viewModel.volume {
                 statLabel(icon: "internaldrive", text: volume.usedSpace.formattedSize + " used")
@@ -211,6 +217,12 @@ struct InfoBarView: View {
                 staleDataWarning
             }
         }
+    }
+
+    /// Returns the scanned file total label, respecting the current size mode.
+    private func scannedSizeLabel(stats: ScanStats) -> String {
+        let size = viewModel.sizeMode == .physical ? stats.totalPhysicalSize : stats.totalLogicalSize
+        return size.formattedSize + " in files"
     }
 
     // MARK: - Idle State
@@ -286,6 +298,7 @@ struct InfoBarView: View {
                 .fill(phaseColor)
                 .frame(width: 8, height: 8)
             Text(phaseText)
+                .contentTransition(.numericText())
         }
     }
 
@@ -310,7 +323,14 @@ struct InfoBarView: View {
                 let completed = progress.deepScanDirsCompleted
                 let total = progress.deepScanDirsTotal
                 if total > 0 {
-                    let pct = Int(Double(completed) / Double(total) * 100)
+                    // Prefer data-size progress (more meaningful than dir count because
+                    // large directories come first — dir-count % is severely skewed early on).
+                    let pct: Int
+                    if progress.estimatedUsedSpace > 0 {
+                        pct = min(99, Int(Double(progress.scannedBytes) / Double(progress.estimatedUsedSpace) * 100))
+                    } else {
+                        pct = Int(Double(completed) / Double(total) * 100)
+                    }
                     return "Approximate data -- deep scan: \(pct)% (\(completed) / \(total) directories)"
                 }
             }
@@ -326,9 +346,6 @@ struct InfoBarView: View {
             }
             return "Smart Scan complete"
         case .green:
-            if case .completed(let stats) = viewModel.scanState {
-                return "Scan complete -- \(stats.totalFiles.formattedCount) files, \(stats.totalLogicalSize.formattedSize)"
-            }
             return "Scan complete"
         }
     }
@@ -340,6 +357,7 @@ struct InfoBarView: View {
             Image(systemName: icon)
                 .font(.caption2)
             Text(text)
+                .contentTransition(.numericText())
         }
     }
 

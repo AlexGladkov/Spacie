@@ -87,6 +87,12 @@ final class ScanCacheWAL: @unchecked Sendable {
     /// Lock for thread-safe access to file operations.
     private let lock = NSLock()
 
+    /// Cached open file handle — avoids open/close syscall overhead on each append.
+    private var _fileHandle: FileHandle?
+
+    /// In-memory entry count; avoids a read-modify-write round trip on each append.
+    private var _entryCount: UInt32 = 0
+
     // MARK: - Initialization
 
     /// Creates a WAL instance for the specified volume.
@@ -105,27 +111,31 @@ final class ScanCacheWAL: @unchecked Sendable {
     ///
     /// - Parameter volumeId: The unique identifier (UUID) of the volume.
     /// - Returns: The URL to the WAL file on disk.
-    static func walFileURL(for volumeId: String) -> URL {
+    /// Cache directory URL (pure computation, no side effects).
+    /// The directory is created lazily before the first write via ``ensureWALDirectoryExists()``.
+    private static let walDirectoryURL: URL = {
         let cachesDirectory = FileManager.default.urls(
             for: .cachesDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return cachesDirectory.appendingPathComponent(cacheDirectoryName, isDirectory: true)
+    }()
 
-        let cacheDir = cachesDirectory
-            .appendingPathComponent(cacheDirectoryName, isDirectory: true)
-
-        // Ensure the directory exists
+    /// Creates the WAL directory if it does not already exist. Call before writes.
+    private static func ensureWALDirectoryExists() {
         try? FileManager.default.createDirectory(
-            at: cacheDir,
+            at: walDirectoryURL,
             withIntermediateDirectories: true
         )
+    }
 
+    static func walFileURL(for volumeId: String) -> URL {
         // Sanitize volume ID for use as a filename
         let sanitizedId = volumeId
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: ":", with: "_")
 
-        return cacheDir.appendingPathComponent("\(sanitizedId).wal")
+        return walDirectoryURL.appendingPathComponent("\(sanitizedId).wal")
     }
 
     /// The file URL for this instance's WAL file.
@@ -137,9 +147,9 @@ final class ScanCacheWAL: @unchecked Sendable {
 
     /// Appends a single entry to the WAL file.
     ///
-    /// If the WAL file does not exist, creates it with a fresh header before
-    /// writing the entry. The entry count in the header is updated after each
-    /// successful append.
+    /// Uses a cached `FileHandle` to eliminate open/close syscall overhead on
+    /// each call. The entry count in the header is updated in-memory and
+    /// written back after each append so it stays consistent even after a crash.
     ///
     /// - Parameters:
     ///   - dirPathHash: FNV-1a hash of the directory's full path.
@@ -150,44 +160,56 @@ final class ScanCacheWAL: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let url = fileURL
-        let fileExists = FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
+        let handle = try openOrCreateHandleLocked()
 
-        if !fileExists {
-            // Create a new WAL file with header
-            let headerData = buildHeader(entryCount: 0)
-            try headerData.write(to: url, options: [])
-        }
-
-        // Open the file for appending
-        let handle = try FileHandle(forUpdating: url)
-        defer { try? handle.close() }
-
-        // Seek to end for appending the entry
+        // Seek to end and write entry
         handle.seekToEndOfFile()
-
-        // Build entry data
         let entryData = buildEntryData(
             dirPathHash: dirPathHash,
             nodes: nodes,
             stringPoolData: stringPoolData
         )
-
         handle.write(entryData)
 
-        // Update entry count in header
-        // Read current count, increment, write back
-        handle.seek(toFileOffset: 12) // offset of EntryCount in header
-        let countData = handle.readData(ofLength: 4)
-        let currentCount: UInt32 = countData.withUnsafeBytes { buffer in
-            UInt32(littleEndian: buffer.loadUnaligned(fromByteOffset: 0, as: UInt32.self))
-        }
-        let newCount = currentCount + 1
-
+        // Update in-memory count and write back to header (offset 12)
+        _entryCount += 1
         handle.seek(toFileOffset: 12)
-        var countLE = newCount.littleEndian
+        var countLE = _entryCount.littleEndian
         let countBytes = withUnsafeBytes(of: &countLE) { Data($0) }
         handle.write(countBytes)
+    }
+
+    /// Opens or returns the cached `FileHandle` for appending.
+    ///
+    /// Creates the WAL file with a fresh header if it does not yet exist.
+    /// The caller **must** hold `lock` before calling this method.
+    ///
+    /// - Returns: An open `FileHandle` positioned for updates.
+    /// - Throws: File I/O errors if the handle cannot be opened.
+    private func openOrCreateHandleLocked() throws -> FileHandle {
+        if let handle = _fileHandle { return handle }
+
+        // Ensure the directory exists before creating the WAL file
+        Self.ensureWALDirectoryExists()
+
+        let url = fileURL
+        if !FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+            let headerData = buildHeader(entryCount: 0)
+            try headerData.write(to: url, options: [])
+            _entryCount = 0
+        } else {
+            // Read existing entry count so _entryCount stays accurate
+            if let existingData = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+               existingData.count >= Self.headerSize {
+                _entryCount = existingData.withUnsafeBytes { buffer in
+                    UInt32(littleEndian: buffer.loadUnaligned(fromByteOffset: 12, as: UInt32.self))
+                }
+            }
+        }
+
+        let handle = try FileHandle(forUpdating: url)
+        _fileHandle = handle
+        return handle
     }
 
     // MARK: - Read All
@@ -339,11 +361,15 @@ final class ScanCacheWAL: @unchecked Sendable {
 
     /// Deletes the WAL file from disk.
     ///
+    /// Closes and releases the cached `FileHandle` before removing the file.
     /// Silently ignores errors if the file does not exist.
     func deleteWAL() {
         lock.lock()
         defer { lock.unlock() }
 
+        try? _fileHandle?.close()
+        _fileHandle = nil
+        _entryCount = 0
         try? FileManager.default.removeItem(at: fileURL)
     }
 

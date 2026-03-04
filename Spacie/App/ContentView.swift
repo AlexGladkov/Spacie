@@ -170,6 +170,13 @@ final class AppViewModel {
     /// Created lazily when a scan starts or cache is loaded.
     private(set) var scanCache: ScanCache?
 
+    /// Whether a cache file exists on disk for the current volume.
+    ///
+    /// Stored rather than computed so it is safe to read from SwiftUI body closures
+    /// without triggering filesystem I/O (which caused a performance regression where
+    /// every progress-update re-render performed `createDirectory` + `stat`).
+    private(set) var cacheExistsForVolume: Bool = false
+
     /// Background task for cache validation and auto-dismiss.
     private var cacheValidationTask: Task<Void, Never>?
 
@@ -221,13 +228,18 @@ final class AppViewModel {
         let configuration = ScanConfiguration(
             rootPath: volume.mountPoint,
             volumeId: volume.id,
-            crossMountPoints: volume.isBoot
+            // crossMountPoints: false — APFS firmlinks share the same st_dev as "/"
+            // so they are traversed normally; simulator APFS volumes (disk5s1, disk7s1…)
+            // have different st_dev and are blocked by the cross-device check.
+            // This makes the /Library/Developer/CoreSimulator exclusion unnecessary.
+            crossMountPoints: false
         )
 
         // Try the incremental cache path first
         let cache = ScanCache(volumeId: volume.id)
         self.scanCache = cache
         orchestrator.scanCache = cache
+        self.cacheExistsForVolume = cache.cacheExists
 
         if cache.cacheExists {
             let loaded = await attemptCacheLoad(cache: cache, configuration: configuration)
@@ -543,7 +555,13 @@ final class AppViewModel {
         }
 
         orchestrator.onProgress = { [weak self] progress in
-            self?.scanState = .scanning(progress)
+            // Animate the scanState change so numeric labels in InfoBarView smoothly
+            // count up via .contentTransition(.numericText()). Duration is slightly
+            // shorter than the throttle interval (500ms) so each update arrives just
+            // as the previous animation finishes, creating a seamless counting effect.
+            withAnimation(.linear(duration: 0.45)) {
+                self?.scanState = .scanning(progress)
+            }
         }
 
         orchestrator.onTreeUpdate = { [weak self] tree in
@@ -623,6 +641,41 @@ final class AppViewModel {
         }
     }
 
+    /// Called after a node has been successfully moved to Trash.
+    ///
+    /// Removes the node from the in-memory tree, re-aggregates sizes so parent
+    /// directories reflect the deletion, and bumps `treeVersion` to trigger a
+    /// UI refresh. Also notifies the orchestrator for Smart Scan coverage tracking.
+    func handleNodeTrashed(index: UInt32) {
+        guard let tree else { return }
+
+        let deletedBytes = tree.removeNode(at: index)
+        tree.aggregateSizes()
+        treeVersion += 1
+
+        // Notify orchestrator (Smart Scan rescan trigger)
+        if let volume, deletedBytes > 0 {
+            orchestrator.handleDeletion(deletedBytes: deletedBytes, volume: volume.mountPoint)
+        }
+
+        // Mark data as potentially stale for FSEvents-based future rescans
+        dataIsStale = false
+    }
+
+    /// Resets to idle state without starting a new scan.
+    /// Called after clearing the cache so the UI returns to the home screen.
+    func resetToIdle() {
+        cancelScan()
+        tree = nil
+        vizState = nil
+        scanState = .idle
+        scanPhase = .red
+        dataIsStale = false
+        cacheStatus = .none
+        scanCache = nil
+        cacheExistsForVolume = false
+    }
+
     /// Discards the current tree and rescans the same volume from scratch.
     func rescan() async {
         tree = nil
@@ -656,6 +709,7 @@ final class AppViewModel {
             lastPhase: phase,
             lastEventId: eventId
         )
+        cacheExistsForVolume = true
     }
 
     /// Schedules auto-dismissal of the cache status banner after a delay.
@@ -928,7 +982,9 @@ struct ContentView: View {
                     state: vizState,
                     sizeMode: viewModel.sizeMode,
                     scanPhase: viewModel.scanPhase,
-                    treeVersion: viewModel.treeVersion
+                    treeVersion: viewModel.treeVersion,
+                    onNodeTrashed: { index in viewModel.handleNodeTrashed(index: index) },
+                    volumeUsedSpace: viewModel.volume?.usedSpace
                 )
             }
         } else {
@@ -1078,12 +1134,11 @@ struct ContentView: View {
                 }
 
                 if let volume = viewModel.volume,
-                   ScanCache(volumeId: volume.id).cacheExists {
+                   viewModel.cacheExistsForVolume {
                     Divider()
                     Button("Clear Cache for \"\(volume.name)\"", role: .destructive) {
-                        let cache = ScanCache(volumeId: volume.id)
-                        cache.invalidate()
-                        viewModel.cacheStatus = .none
+                        ScanCache(volumeId: volume.id).invalidate()
+                        viewModel.resetToIdle()
                     }
                 }
             } label: {
