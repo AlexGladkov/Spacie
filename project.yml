@@ -1,4 +1,8 @@
 name: Spacie
+configs:
+  Debug: debug
+  Release: release
+  Release-AppStore: release
 options:
   bundleIdPrefix: com.spacie
   deploymentTarget:
@@ -15,7 +19,7 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
-    MARKETING_VERSION: "1.2.0"
+    MARKETING_VERSION: "0.0.1"
     CURRENT_PROJECT_VERSION: "3"
     PRODUCT_NAME: Spacie
     GENERATE_INFOPLIST_FILE: YES
@@ -25,22 +29,41 @@ settings:
   configs:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG DIRECT"
     Release:
       SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DIRECT"
+    Release-AppStore:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "APPSTORE"
 
 targets:
   Spacie:
     type: application
     platform: macOS
+    preBuildScripts:
+      - name: "Build KMP SpacieKit"
+        script: |
+          cd "$SRCROOT/shared"
+          if [ "$CONFIGURATION" = "Debug" ]; then
+            ./gradlew assembleSpacieKitDebugXCFramework --no-daemon -q
+          else
+            ./gradlew assembleSpacieKitReleaseXCFramework --no-daemon -q
+          fi
+        basedOnDependencyAnalysis: false
     sources:
       - path: Spacie
         excludes:
           - "**/*Tests*"
+    dependencies:
+      - framework: shared/build/XCFrameworks/debug/SpacieKit.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.spacie.app
         INFOPLIST_KEY_LSUIElement: false
+        CODE_SIGN_ENTITLEMENTS: Spacie/Spacie.entitlements
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/shared/build/XCFrameworks/debug"
 
   SpacieTests:
     type: bundle.unit-test

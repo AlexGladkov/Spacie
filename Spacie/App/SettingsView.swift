@@ -42,6 +42,13 @@ struct SettingsView: View {
                     Label("Cache", systemImage: "archivebox")
                 }
 
+            #if DIRECT
+            iOSTransferSettingsTab()
+                .tabItem {
+                    Label("iOS Transfer", systemImage: "iphone.and.arrow.right.and.arrow.left.inward")
+                }
+            #endif
+
             AboutSettingsTab()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
@@ -564,6 +571,115 @@ private struct CacheSettingsTab: View {
         return "\(formatted) items"
     }
 }
+
+// MARK: - iOS Transfer Tab (Direct only)
+
+#if DIRECT
+/// Settings for the iOS App Transfer feature.
+///
+/// Lets the user choose a custom folder for extracted IPA archives and
+/// shows the total space currently occupied by archived apps.
+/// This tab is only present in Direct (non-App Store) builds.
+private struct iOSTransferSettingsTab: View {
+
+    /// User-configured archive folder path. Empty string means "use default".
+    @AppStorage("iOSArchiveDirectory") private var customPath: String = ""
+
+    @State private var totalSize: UInt64?
+    @State private var isLoadingSize = false
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        return f
+    }()
+
+    /// The path actually in use (custom if valid, otherwise default).
+    private var effectivePath: String {
+        customPath.isEmpty ? AppArchiveService.defaultArchiveDirectory.path : customPath
+    }
+
+    var body: some View {
+        Form {
+            Section("Archive Folder") {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.secondary)
+                    Text(effectivePath)
+                        .font(.system(.callout, design: .monospaced))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    Button("Change…") { changeArchiveDirectory() }
+
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [URL(fileURLWithPath: effectivePath)]
+                        )
+                    }
+
+                    if !customPath.isEmpty {
+                        Button("Reset to Default", role: .destructive) {
+                            customPath = ""
+                            refreshSize()
+                        }
+                    }
+                }
+                .controlSize(.small)
+            }
+
+            Section("Storage") {
+                HStack {
+                    Text("Total archive size")
+                    Spacer()
+                    if isLoadingSize {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if let size = totalSize {
+                        Text(Self.byteFormatter.string(fromByteCount: Int64(size)))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("—")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .onAppear { refreshSize() }
+    }
+
+    private func changeArchiveDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose Archive Folder"
+        panel.message = "Select where to save extracted IPA files."
+        if panel.runModal() == .OK, let url = panel.url {
+            customPath = url.path
+            refreshSize()
+        }
+    }
+
+    private func refreshSize() {
+        isLoadingSize = true
+        totalSize = nil
+        Task {
+            let service = AppArchiveService()
+            let size = try? await service.totalArchiveSize()
+            await MainActor.run {
+                totalSize = size
+                isLoadingSize = false
+            }
+        }
+    }
+}
+#endif
 
 // MARK: - About Tab
 

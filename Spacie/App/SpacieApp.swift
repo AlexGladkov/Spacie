@@ -23,10 +23,9 @@ struct SpacieApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            HomeView()
                 .environment(volumeManager)
                 .environment(permissionManager)
-                .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
                     permissionManager.checkFullDiskAccess()
                     volumeManager.refresh()

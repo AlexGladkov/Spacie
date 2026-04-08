@@ -752,6 +752,8 @@ final class AppViewModel {
 /// 3. **Results screen** -- visualization and feature panels after a scan completes.
 struct ContentView: View {
 
+    var onDismiss: (() -> Void)? = nil
+
     @State private var viewModel = AppViewModel()
     @Environment(VolumeManager.self) private var volumeManager
     @Environment(PermissionManager.self) private var permissionManager
@@ -1075,6 +1077,16 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Home button (shown when launched from HomeView)
+        if let onDismiss {
+            ToolbarItem(placement: .navigation) {
+                Button(action: onDismiss) {
+                    Label("Home", systemImage: "house")
+                }
+                .help("Return to Home")
+            }
+        }
+
         // Volume picker
         ToolbarItem(placement: .navigation) {
             Menu {
