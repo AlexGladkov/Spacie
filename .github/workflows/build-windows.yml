@@ -40,7 +40,8 @@ jobs:
 
       - name: Build Windows MSI
         working-directory: composeApp
-        run: ./gradlew packageMsi --no-daemon -q
+        # Override org.gradle.java.home from gradle.properties (macOS path) with CI's JAVA_HOME
+        run: ./gradlew packageMsi --no-daemon -q "-Dorg.gradle.java.home=$JAVA_HOME"
         shell: bash
 
       - name: Find MSI path
