@@ -431,7 +431,8 @@ private extension SpaTrustState {
 private extension SpaDependencyStatus {
 
     func toSwift() -> DependencyStatus {
-        if self is SpaDependencyStatus.SpaDependencyStatusHomebrewMissing {
+        if let pmMissing = self as? SpaDependencyStatus.SpaDependencyStatusPackageManagerMissing {
+            _ = pmMissing // Homebrew on macOS
             return .homebrewMissing
         }
 
@@ -473,7 +474,7 @@ private func mapKMPError(_ error: Error) -> iMobileDeviceError {
     // Prefer the strongly-typed Kotlin exception when available.
     let kotlinException = nsError.kotlinException ?? error
 
-    if kotlinException is SpaSpacieError.SpaSpacieErrorHomebrewNotInstalled {
+    if kotlinException is SpaSpacieError.SpaSpacieErrorPackageManagerNotInstalled {
         return .homebrewNotInstalled
     }
 

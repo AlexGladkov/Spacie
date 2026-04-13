@@ -73,7 +73,7 @@ class DeviceServiceImpl : DeviceServiceApi {
 
     override suspend fun installDependencies(onLine: (String) -> Unit) {
         val brewPath = resolver.resolve("brew")
-            ?: throw SpacieError.HomebrewNotInstalled
+            ?: throw SpacieError.PackageManagerNotInstalled("Homebrew", "https://brew.sh")
 
         val result = runner.runWithLineOutput(
             executablePath = brewPath,
@@ -505,7 +505,9 @@ class DeviceServiceImpl : DeviceServiceApi {
         return when (val status = resolver.resolveAll()) {
             is DependencyStatus.Ready -> status.toolPaths
             is DependencyStatus.Missing -> throw SpacieError.DependencyMissing(status.tools)
-            is DependencyStatus.HomebrewMissing -> throw SpacieError.HomebrewNotInstalled
+            is DependencyStatus.PackageManagerMissing -> throw SpacieError.PackageManagerNotInstalled(
+                status.managerName, status.installUrl
+            )
         }
     }
 

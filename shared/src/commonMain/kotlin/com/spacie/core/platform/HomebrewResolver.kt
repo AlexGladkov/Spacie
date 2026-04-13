@@ -53,7 +53,8 @@ class HomebrewResolver {
      *         or [DependencyStatus.HomebrewMissing] if Homebrew is not found.
      */
     fun resolveAll(): DependencyStatus {
-        val brewPath = resolve("brew") ?: return DependencyStatus.HomebrewMissing
+        val brewPath = resolve("brew")
+            ?: return DependencyStatus.PackageManagerMissing("Homebrew", "https://brew.sh")
 
         val missing = mutableListOf<String>()
         val paths = mutableMapOf<String, String>()

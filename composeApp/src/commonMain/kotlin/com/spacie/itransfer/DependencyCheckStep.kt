@@ -120,7 +120,7 @@ private fun DependencyStatusCard(state: ITransferState, viewModel: ITransferView
                                     strokeWidth = 2.dp
                                 )
                                 Text(
-                                    text = "  Installing via Homebrew...",
+                                    text = "  Installing dependencies...",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -134,15 +134,15 @@ private fun DependencyStatusCard(state: ITransferState, viewModel: ITransferView
                             onClick = { viewModel.installDependencies() },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Install with Homebrew")
+                            Text("Install Dependencies")
                         }
                     }
                 }
-                is DependencyStatus.HomebrewMissing -> {
+                is DependencyStatus.PackageManagerMissing -> {
                     StatusRow(
-                        label = "Homebrew not found",
+                        label = "${status.managerName} not found",
                         ok = false,
-                        detail = "Install Homebrew from https://brew.sh"
+                        detail = "Install ${status.managerName} from ${status.installUrl}"
                     )
                 }
             }

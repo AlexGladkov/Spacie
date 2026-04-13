@@ -61,14 +61,13 @@ class ChocolateyResolver {
     /**
      * Resolve all required tools and return the aggregate dependency status.
      *
-     * [DependencyStatus.HomebrewMissing] is returned when no package manager
-     * (Chocolatey / Scoop) can be detected — semantically analogous to the
-     * macOS case where Homebrew is absent.
+     * [DependencyStatus.PackageManagerMissing] is returned when no package manager
+     * (Chocolatey / Scoop) can be detected.
      */
     fun resolveAll(): DependencyStatus {
         val chocoPath = resolve("choco")
         if (chocoPath == null && !isChocolateyInstalled()) {
-            return DependencyStatus.HomebrewMissing
+            return DependencyStatus.PackageManagerMissing("Chocolatey", "https://chocolatey.org/install")
         }
 
         val missing = mutableListOf<String>()

@@ -20,8 +20,11 @@ sealed class DependencyStatus {
     @ObjCName("SpaDependencyStatusMissing")
     data class Missing(val tools: List<String>) : DependencyStatus()
 
-    @ObjCName("SpaDependencyStatusHomebrewMissing")
-    data object HomebrewMissing : DependencyStatus()
+    @ObjCName("SpaDependencyStatusPackageManagerMissing")
+    data class PackageManagerMissing(
+        val managerName: String,
+        val installUrl: String
+    ) : DependencyStatus()
 }
 
 @OptIn(ExperimentalObjCName::class)

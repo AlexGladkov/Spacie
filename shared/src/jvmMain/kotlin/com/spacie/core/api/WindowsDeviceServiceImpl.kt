@@ -46,7 +46,7 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
 
     override suspend fun installDependencies(onLine: (String) -> Unit) {
         val chocoPath = resolver.resolve("choco")
-            ?: throw SpacieError.HomebrewNotInstalled
+            ?: throw SpacieError.PackageManagerNotInstalled("Chocolatey", "https://chocolatey.org/install")
 
         val result = runner.runWithLineOutput(
             executablePath = chocoPath,
@@ -399,7 +399,9 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         return when (val status = resolver.resolveAll()) {
             is DependencyStatus.Ready -> status.toolPaths
             is DependencyStatus.Missing -> throw SpacieError.DependencyMissing(status.tools)
-            is DependencyStatus.HomebrewMissing -> throw SpacieError.HomebrewNotInstalled
+            is DependencyStatus.PackageManagerMissing -> throw SpacieError.PackageManagerNotInstalled(
+                status.managerName, status.installUrl
+            )
         }
     }
 
