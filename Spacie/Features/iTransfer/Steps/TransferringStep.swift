@@ -38,7 +38,7 @@ struct TransferringStepView: View {
 
             Button("Cancel") {
                 viewModel.cancelTransfer()
-                viewModel.step = .result
+                viewModel.state = .result
             }
             .buttonStyle(.bordered)
         }

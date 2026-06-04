@@ -99,7 +99,7 @@ struct SelectAppsStepView: View {
             HStack {
                 Spacer()
                 Button("Continue") {
-                    viewModel.step = .chooseAction
+                    viewModel.state = .chooseAction
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!viewModel.canProceedFromSelectApps)

@@ -25,6 +25,7 @@
 		7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */; };
 		7A1E0AB72601E0F100AB0005 /* InstallFromArchiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */; };
 		7A1E0AB92601E0F100AB0006 /* InstallFromArchiveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */; };
+		7A1E0AE0260400000001 /* iTransferState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AE1260400000001 /* iTransferState.swift */; };
 		7A1E0AC026020000A100 /* iTransferStepIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B100 /* iTransferStepIndicator.swift */; };
 		7A1E0AC026020000A200 /* DependencyCheckStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B200 /* DependencyCheckStep.swift */; };
 		7A1E0AC026020000A300 /* ConnectDeviceStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B300 /* ConnectDeviceStep.swift */; };
@@ -168,6 +169,7 @@
 		7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapper.swift; sourceTree = "<group>"; };
 		7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallFromArchiveViewModel.swift; sourceTree = "<group>"; };
 		7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallFromArchiveSheet.swift; sourceTree = "<group>"; };
+		7A1E0AE1260400000001 /* iTransferState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferState.swift; sourceTree = "<group>"; };
 		7A1E0AC126020000B100 /* iTransferStepIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferStepIndicator.swift; sourceTree = "<group>"; };
 		7A1E0AC126020000B200 /* DependencyCheckStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DependencyCheckStep.swift; sourceTree = "<group>"; };
 		7A1E0AC126020000B300 /* ConnectDeviceStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectDeviceStep.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */,
 				94F1AB789AF98AED07FFEA85 /* iTransferView.swift */,
 				BF06C2776345DB571FD48787 /* iTransferViewModel.swift */,
+				7A1E0AE1260400000001 /* iTransferState.swift */,
 				7A1E0AC2260200000000 /* Steps */,
 			);
 			path = iTransfer;
@@ -717,6 +720,7 @@
 				0E0F9D91D8B1F84EC75688AA /* AppArchiveView.swift in Sources */,
 				7A1E0AB72601E0F100AB0005 /* InstallFromArchiveViewModel.swift in Sources */,
 				7A1E0AB92601E0F100AB0006 /* InstallFromArchiveSheet.swift in Sources */,
+				7A1E0AE0260400000001 /* iTransferState.swift in Sources */,
 				7A1E0AC026020000A100 /* iTransferStepIndicator.swift in Sources */,
 				7A1E0AC026020000A200 /* DependencyCheckStep.swift in Sources */,
 				7A1E0AC026020000A300 /* ConnectDeviceStep.swift in Sources */,

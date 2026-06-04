@@ -21,93 +21,34 @@ enum iTransferStep: Int, Comparable, CaseIterable, Sendable {
 
 /// Primary view model for the iOS App Transfer wizard.
 ///
-/// Follows the same `@MainActor @Observable` pattern used by ``AppViewModel``.
-/// The wizard advances linearly through ``iTransferStep`` cases, with each step
-/// owning its own async work (dependency check, device polling, app list, transfer).
-///
-/// ## Lifecycle
-/// 1. Initialised when the user navigates to the transfer feature.
-/// 2. `checkDependencies()` is called automatically.
-/// 3. User interacts step-by-step.
-/// 4. `cancel()` terminates any in-flight async work and resets to the current step.
+/// Sprint 4.5 rewrite — replaces the previous flat collection of 20+
+/// `@Observable` fields (with the impossible-state combinations the audit
+/// flagged) with a single [iTransferState] enum + cumulative [wizardData].
+/// View code keeps reading the old top-level properties via computed
+/// accessors so the rewrite stays binary-compatible with the step views.
 @MainActor
 @Observable
 final class iTransferViewModel {
 
-    // MARK: - Step State
+    // MARK: - State
 
-    var step: iTransferStep = .dependencyCheck
+    /// Strongly typed wizard state. The variant indicates the current step;
+    /// its associated value carries only step-local flags (e.g. polling
+    /// active).
+    var state: iTransferState = .dependencyCheck(DependencyCheckSubstate())
 
-    // MARK: - Dependency Check (Step 1)
-
-    var dependencyStatus: DependencyStatus?
-    var installOutput: [String] = []
-    var isInstallingDependencies = false
-
-    // MARK: - Source Device (Step 2)
-
-    var sourceDevice: DeviceInfo?
-    var sourceTrustState: TrustState = .notTrusted
-    var isWaitingForSource = false
-
-    // MARK: - App Selection (Step 3)
-
-    var availableApps: [AppInfo] = []
-    var selectedBundleIDs: Set<String> = []
-    var isLoadingApps = false
-
-    // MARK: - Action Choice (Step 4)
-
-    /// `true` → archive only. `false` → archive + install on destination.
-    var archiveOnly = false
-    /// Directory selected by the user for storing IPAs. `nil` until chosen.
-    var archiveDir: URL?
-
-    // MARK: - Destination Device (Step 5)
-
-    var destinationDevice: DeviceInfo?
-    var destinationTrustState: TrustState = .notTrusted
-    var isWaitingForDestination = false
-
-    // MARK: - Transfer (Step 6)
-
-    var transferProgress: TransferProgress?
-
-    // MARK: - Result (Step 7)
-
-    var transferResult: TransferResult?
-
-    // MARK: - Apple ID Auth (Part of Dependency Check)
-
-    /// Whether ipatool is currently authenticated with a valid Apple ID session.
-    var appleIDAuthenticated: Bool = false
-
-    /// `true` while `ipatool auth info` is running.
-    var isCheckingAppleID = false
-
-    /// `true` while `ipatool auth login` is running.
-    var isAuthenticatingAppleID = false
-
-    /// Localized error message from the last failed sign-in attempt.
-    var appleIDLoginError: String?
-
-    /// `true` after first login attempt revealed 2FA is required.
-    /// UI switches to show the verification code field only.
-    var appleIDNeedsTwoFactor = false
-
-    /// Email remembered between the two 2FA steps so it can be shown in the UI.
-    var appleIDEmailForTwoFactor = ""
-
-    // MARK: - General Error
-
-    var lastError: String?
+    /// Cumulative wizard data that persists across step transitions.
+    /// Mutating fields on this struct fires a single Observable update.
+    var wizardData = iTransferWizardData()
 
     // MARK: - Dependencies
 
     private let service: any iMobileDeviceProtocol
     private let archiveService: any AppArchiveProtocol
 
+    @ObservationIgnored
     private var deviceObservationTask: Task<Void, Never>?
+    @ObservationIgnored
     private var transferTask: Task<Void, Never>?
 
     // MARK: - Init
@@ -120,124 +61,217 @@ final class iTransferViewModel {
         self.archiveService = archiveService
     }
 
+    // MARK: - Back-compat accessors (read paths)
+    //
+    // Step views were written against flat top-level properties. Keep those
+    // accessors as computed properties so views compile unchanged. Each one
+    // delegates to [state] or [wizardData].
+
+    var step: iTransferStep { state.kind }
+
+    var dependencyStatus: DependencyStatus? { wizardData.dependencyStatus }
+    var installOutput: [String] { wizardData.installOutput }
+    var isInstallingDependencies: Bool {
+        if case .dependencyCheck(let sub) = state { return sub.isInstallingDependencies }
+        return false
+    }
+
+    var sourceDevice: DeviceInfo? { wizardData.sourceDevice }
+    var sourceTrustState: TrustState { wizardData.sourceTrustState }
+    var isWaitingForSource: Bool {
+        if case .connectSource(let sub) = state { return sub.isWaiting }
+        return false
+    }
+
+    var availableApps: [AppInfo] {
+        get { wizardData.availableApps }
+        set { wizardData.availableApps = newValue }
+    }
+    var selectedBundleIDs: Set<String> {
+        get { wizardData.selectedBundleIDs }
+        set { wizardData.selectedBundleIDs = newValue }
+    }
+    var isLoadingApps: Bool {
+        if case .selectApps(let sub) = state { return sub.isLoadingApps }
+        return false
+    }
+
+    var archiveOnly: Bool {
+        get { wizardData.archiveOnly }
+        set { wizardData.archiveOnly = newValue }
+    }
+    var archiveDir: URL? {
+        get { wizardData.archiveDir }
+        set { wizardData.archiveDir = newValue }
+    }
+
+    var destinationDevice: DeviceInfo? { wizardData.destinationDevice }
+    var destinationTrustState: TrustState { wizardData.destinationTrustState }
+    var isWaitingForDestination: Bool {
+        if case .connectDestination(let sub) = state { return sub.isWaiting }
+        return false
+    }
+
+    var transferProgress: TransferProgress? { wizardData.transferProgress }
+    var transferResult: TransferResult? { wizardData.transferResult }
+
+    var appleIDAuthenticated: Bool { wizardData.appleIDAuthenticated }
+    var isCheckingAppleID: Bool {
+        if case .dependencyCheck(let sub) = state { return sub.isCheckingAppleID }
+        return false
+    }
+    var isAuthenticatingAppleID: Bool {
+        if case .dependencyCheck(let sub) = state { return sub.isAuthenticatingAppleID }
+        return false
+    }
+    var appleIDLoginError: String? { wizardData.appleIDLoginError }
+    var appleIDNeedsTwoFactor: Bool { wizardData.appleIDNeedsTwoFactor }
+    var appleIDEmailForTwoFactor: String { wizardData.appleIDEmailForTwoFactor }
+
+    var lastError: String? { wizardData.lastError }
+
+    var selectedAppsCount: Int { wizardData.selectedBundleIDs.count }
+    var canProceedFromSelectApps: Bool { !wizardData.selectedBundleIDs.isEmpty }
+    var canProceedFromChooseAction: Bool { true }
+
     // MARK: - Step 1: Dependency Check
 
     func checkDependencies() async {
-        dependencyStatus = nil
-        lastError = nil
+        wizardData.dependencyStatus = nil
+        wizardData.lastError = nil
         let status = await service.checkDependencies()
-        dependencyStatus = status
+        wizardData.dependencyStatus = status
         if case .ready = status {
-            // Also verify Apple ID authentication before advancing.
             await checkAppleIDStatus()
-            if appleIDAuthenticated {
-                step = .connectSource
+            if wizardData.appleIDAuthenticated {
+                state = .connectSource(ConnectDeviceSubstate())
             }
         }
     }
 
     func installDependencies() async {
-        guard !isInstallingDependencies else { return }
-        isInstallingDependencies = true
-        installOutput = []
-        lastError = nil
+        guard case .dependencyCheck(var sub) = state, !sub.isInstallingDependencies else { return }
+        sub.isInstallingDependencies = true
+        state = .dependencyCheck(sub)
+        wizardData.installOutput = []
+        wizardData.lastError = nil
 
         do {
             try await service.installDependencies { [weak self] line in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.installOutput.append(line)
+                    self.wizardData.installOutput.append(line)
                 }
             }
             let status = await service.checkDependencies()
-            dependencyStatus = status
+            wizardData.dependencyStatus = status
             if case .ready = status {
-                // Must also check Apple ID before advancing, same as checkDependencies().
                 await checkAppleIDStatus()
-                if appleIDAuthenticated {
-                    step = .connectSource
+                if wizardData.appleIDAuthenticated {
+                    state = .connectSource(ConnectDeviceSubstate())
+                    return
                 }
-                // If not authenticated, stays on Setup and shows Apple ID form.
             }
         } catch {
-            lastError = error.localizedDescription
+            wizardData.lastError = error.localizedDescription
         }
 
-        isInstallingDependencies = false
+        if case .dependencyCheck(var sub) = state {
+            sub.isInstallingDependencies = false
+            state = .dependencyCheck(sub)
+        }
     }
 
     // MARK: - Apple ID Auth Helpers
 
-    /// Queries ipatool for an active session and updates ``appleIDAuthenticated``.
     func checkAppleIDStatus() async {
-        isCheckingAppleID = true
-        appleIDAuthenticated = await service.checkAppleIDAuth()
-        isCheckingAppleID = false
+        guard case .dependencyCheck(var sub) = state else { return }
+        sub.isCheckingAppleID = true
+        state = .dependencyCheck(sub)
+
+        wizardData.appleIDAuthenticated = await service.checkAppleIDAuth()
+
+        if case .dependencyCheck(var s) = state {
+            s.isCheckingAppleID = false
+            state = .dependencyCheck(s)
+        }
     }
 
-    /// Step 1: attempt login with email + password only.
-    /// If 2FA is required, sets `appleIDNeedsTwoFactor = true` so the UI can
-    /// show the verification-code field as a second step.
     func loginAppleID(email: String, password: String) async {
-        isAuthenticatingAppleID = true
-        appleIDLoginError = nil
-        appleIDNeedsTwoFactor = false
-        do {
-            try await service.loginAppleID(email: email, password: password, authCode: nil)
-            appleIDAuthenticated = true
-            appleIDEmailForTwoFactor = ""
-            step = .connectSource
-        } catch iMobileDeviceError.twoFactorRequired {
-            // Apple sent a 2FA code to the user's devices — keep the form open.
-            appleIDNeedsTwoFactor = true
-            appleIDEmailForTwoFactor = email
-        } catch {
-            appleIDLoginError = error.localizedDescription
+        await runAppleIDAuth { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.service.loginAppleID(email: email, password: password, authCode: nil)
+                self.wizardData.appleIDAuthenticated = true
+                self.wizardData.appleIDEmailForTwoFactor = ""
+                self.state = .connectSource(ConnectDeviceSubstate())
+            } catch iMobileDeviceError.twoFactorRequired {
+                self.wizardData.appleIDNeedsTwoFactor = true
+                self.wizardData.appleIDEmailForTwoFactor = email
+            } catch {
+                self.wizardData.appleIDLoginError = error.localizedDescription
+            }
         }
-        isAuthenticatingAppleID = false
     }
 
-    /// Step 2: re-login with the 2FA code the user received on their devices.
     func loginAppleIDWithTwoFactor(email: String, password: String, code: String) async {
-        isAuthenticatingAppleID = true
-        appleIDLoginError = nil
-        do {
-            try await service.loginAppleID(email: email, password: password, authCode: code)
-            appleIDAuthenticated = true
-            appleIDNeedsTwoFactor = false
-            appleIDEmailForTwoFactor = ""
-            step = .connectSource
-        } catch {
-            appleIDLoginError = error.localizedDescription
+        await runAppleIDAuth { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.service.loginAppleID(email: email, password: password, authCode: code)
+                self.wizardData.appleIDAuthenticated = true
+                self.wizardData.appleIDNeedsTwoFactor = false
+                self.wizardData.appleIDEmailForTwoFactor = ""
+                self.state = .connectSource(ConnectDeviceSubstate())
+            } catch {
+                self.wizardData.appleIDLoginError = error.localizedDescription
+            }
         }
-        isAuthenticatingAppleID = false
     }
 
     func cancelAppleIDLogin() {
-        appleIDNeedsTwoFactor = false
-        appleIDLoginError = nil
-        appleIDEmailForTwoFactor = ""
+        wizardData.appleIDNeedsTwoFactor = false
+        wizardData.appleIDLoginError = nil
+        wizardData.appleIDEmailForTwoFactor = ""
+    }
+
+    private func runAppleIDAuth(_ body: () async -> Void) async {
+        guard case .dependencyCheck(var sub) = state else { return }
+        sub.isAuthenticatingAppleID = true
+        state = .dependencyCheck(sub)
+        wizardData.appleIDLoginError = nil
+        wizardData.appleIDNeedsTwoFactor = false
+
+        await body()
+
+        if case .dependencyCheck(var s) = state {
+            s.isAuthenticatingAppleID = false
+            state = .dependencyCheck(s)
+        }
     }
 
     // MARK: - Step 2: Connect Source
 
     func startSourceDeviceObservation() {
         stopDeviceObservation()
-        isWaitingForSource = true
+        state = .connectSource(ConnectDeviceSubstate(isWaiting: true))
         deviceObservationTask = Task { [weak self] in
             guard let self else { return }
             for await event in self.service.observeDevices(pollingInterval: 2.0) {
                 if Task.isCancelled { return }
                 self.handleDeviceEvent(event, role: .source)
-                if self.sourceDevice != nil, self.sourceTrustState == .trusted {
+                if self.wizardData.sourceDevice != nil, self.wizardData.sourceTrustState == .trusted {
                     break
                 }
             }
             if Task.isCancelled { return }
-            self.isWaitingForSource = false
+            // Loop ended — clear the waiting flag and proceed.
+            if case .connectSource = self.state {
+                self.state = .connectSource(ConnectDeviceSubstate(isWaiting: false))
+            }
             await self.loadSourceApps()
-            if !self.availableApps.isEmpty || self.lastError != nil {
-                self.step = .selectApps
+            if !self.wizardData.availableApps.isEmpty || self.wizardData.lastError != nil {
+                self.state = .selectApps(SelectAppsSubstate())
             }
         }
     }
@@ -250,41 +284,41 @@ final class iTransferViewModel {
     // MARK: - Step 3: Select Apps
 
     func loadSourceApps() async {
-        guard let udid = sourceDevice?.udid else { return }
-        isLoadingApps = true
-        lastError = nil
+        guard let udid = wizardData.sourceDevice?.udid else { return }
+        state = .selectApps(SelectAppsSubstate(isLoadingApps: true))
+        wizardData.lastError = nil
         do {
-            availableApps = try await service.listApps(udid: udid)
+            wizardData.availableApps = try await service.listApps(udid: udid)
         } catch {
-            lastError = error.localizedDescription
+            wizardData.lastError = error.localizedDescription
         }
-        isLoadingApps = false
+        state = .selectApps(SelectAppsSubstate(isLoadingApps: false))
     }
 
     func toggleAppSelection(_ bundleID: String) {
-        if selectedBundleIDs.contains(bundleID) {
-            selectedBundleIDs.remove(bundleID)
+        if wizardData.selectedBundleIDs.contains(bundleID) {
+            wizardData.selectedBundleIDs.remove(bundleID)
         } else {
-            selectedBundleIDs.insert(bundleID)
+            wizardData.selectedBundleIDs.insert(bundleID)
         }
     }
 
     func selectAllApps() {
-        selectedBundleIDs = Set(availableApps.map(\.bundleID))
+        wizardData.selectedBundleIDs = Set(wizardData.availableApps.map(\.bundleID))
     }
 
     func deselectAllApps() {
-        selectedBundleIDs = []
+        wizardData.selectedBundleIDs = []
     }
 
     // MARK: - Step 4: Choose Action
 
     func chooseArchiveOnly() {
-        archiveOnly = true
+        wizardData.archiveOnly = true
     }
 
     func chooseArchiveAndInstall() {
-        archiveOnly = false
+        wizardData.archiveOnly = false
     }
 
     /// Presents the directory picker via `NSOpenPanel`.
@@ -297,15 +331,15 @@ final class iTransferViewModel {
         panel.message = "Select where to save the extracted IPA files."
 
         if panel.runModal() == .OK {
-            archiveDir = panel.url
+            wizardData.archiveDir = panel.url
         }
     }
 
     func proceedFromChooseAction() {
-        if archiveOnly {
-            step = .transferring
+        if wizardData.archiveOnly {
+            state = .transferring
         } else {
-            step = .connectDestination
+            state = .connectDestination(ConnectDeviceSubstate())
         }
     }
 
@@ -313,13 +347,14 @@ final class iTransferViewModel {
 
     func startDestinationDeviceObservation() {
         stopDeviceObservation()
-        isWaitingForDestination = true
+        state = .connectDestination(ConnectDeviceSubstate(isWaiting: true))
         deviceObservationTask = Task { [weak self] in
             guard let self else { return }
             for await event in self.service.observeDevices(pollingInterval: 2.0) {
                 if Task.isCancelled { return }
                 self.handleDeviceEvent(event, role: .destination)
-                if self.destinationDevice != nil, self.destinationTrustState == .trusted {
+                if self.wizardData.destinationDevice != nil,
+                   self.wizardData.destinationTrustState == .trusted {
                     break
                 }
             }
@@ -329,15 +364,17 @@ final class iTransferViewModel {
     // MARK: - Step 6: Transfer
 
     func startTransfer() {
-        guard let sourceUDID = sourceDevice?.udid else { return }
+        guard let sourceUDID = wizardData.sourceDevice?.udid else { return }
 
-        let selectedApps = availableApps.filter { selectedBundleIDs.contains($0.bundleID) }
+        let selectedApps = wizardData.availableApps.filter {
+            wizardData.selectedBundleIDs.contains($0.bundleID)
+        }
         guard !selectedApps.isEmpty else { return }
 
-        let destUDID: String? = archiveOnly ? nil : destinationDevice?.udid
-        let dir = archiveDir ?? archiveService.archiveDirectory
-        transferProgress = nil
-        lastError = nil
+        let destUDID: String? = wizardData.archiveOnly ? nil : wizardData.destinationDevice?.udid
+        let dir = wizardData.archiveDir ?? archiveService.archiveDirectory
+        wizardData.transferProgress = nil
+        wizardData.lastError = nil
 
         transferTask = Task { [weak self] in
             guard let self else { return }
@@ -346,21 +383,21 @@ final class iTransferViewModel {
                 destinationUDID: destUDID,
                 apps: selectedApps,
                 archiveDir: dir,
-                shouldInstall: !self.archiveOnly
+                shouldInstall: !self.wizardData.archiveOnly
             )
             do {
                 for try await progress in stream {
                     if Task.isCancelled { return }
-                    self.transferProgress = progress
+                    self.wizardData.transferProgress = progress
                 }
                 self.buildTransferResult(from: selectedApps)
             } catch {
                 if Task.isCancelled { return }
-                self.lastError = error.localizedDescription
+                self.wizardData.lastError = error.localizedDescription
                 self.buildTransferResult(from: selectedApps)
             }
             if Task.isCancelled { return }
-            self.step = .result
+            self.state = .result
         }
     }
 
@@ -374,38 +411,13 @@ final class iTransferViewModel {
     func reset() {
         cancelTransfer()
         stopDeviceObservation()
-        step = .dependencyCheck
-        dependencyStatus = nil
-        installOutput = []
-        isInstallingDependencies = false
-        appleIDAuthenticated = false
-        isCheckingAppleID = false
-        isAuthenticatingAppleID = false
-        appleIDLoginError = nil
-        sourceDevice = nil
-        sourceTrustState = .notTrusted
-        isWaitingForSource = false
-        availableApps = []
-        selectedBundleIDs = []
-        isLoadingApps = false
-        archiveOnly = true
-        archiveDir = nil
-        destinationDevice = nil
-        destinationTrustState = .notTrusted
-        isWaitingForDestination = false
-        transferProgress = nil
-        transferResult = nil
-        lastError = nil
-    }
-
-    // MARK: - Computed Helpers
-
-    var selectedAppsCount: Int { selectedBundleIDs.count }
-
-    var canProceedFromSelectApps: Bool { !selectedBundleIDs.isEmpty }
-
-    var canProceedFromChooseAction: Bool {
-        archiveOnly || !archiveOnly  // always true; archiveDir optional (defaults to app support)
+        state = .dependencyCheck(DependencyCheckSubstate())
+        var fresh = iTransferWizardData()
+        // Match the historical reset behaviour — `archiveOnly` defaults to
+        // true so users land on "archive only" after a transfer completes
+        // (sensible default for the most common follow-up scenario).
+        fresh.archiveOnly = true
+        wizardData = fresh
     }
 
     // MARK: - Private
@@ -415,47 +427,49 @@ final class iTransferViewModel {
     private func handleDeviceEvent(_ event: DeviceEvent, role: DeviceRole) {
         switch event {
         case .connected(let device):
-            if role == .source, sourceDevice == nil {
-                sourceDevice = device
-                sourceTrustState = .notTrusted
-            } else if role == .destination, destinationDevice == nil,
-                      device.udid != sourceDevice?.udid {
-                destinationDevice = device
-                destinationTrustState = .notTrusted
+            if role == .source, wizardData.sourceDevice == nil {
+                wizardData.sourceDevice = device
+                wizardData.sourceTrustState = .notTrusted
+            } else if role == .destination, wizardData.destinationDevice == nil,
+                      device.udid != wizardData.sourceDevice?.udid {
+                wizardData.destinationDevice = device
+                wizardData.destinationTrustState = .notTrusted
             }
 
         case .disconnected(let udid):
-            if role == .source, sourceDevice?.udid == udid {
-                sourceDevice = nil
-                sourceTrustState = .notTrusted
-            } else if role == .destination, destinationDevice?.udid == udid {
-                destinationDevice = nil
-                destinationTrustState = .notTrusted
+            if role == .source, wizardData.sourceDevice?.udid == udid {
+                wizardData.sourceDevice = nil
+                wizardData.sourceTrustState = .notTrusted
+            } else if role == .destination, wizardData.destinationDevice?.udid == udid {
+                wizardData.destinationDevice = nil
+                wizardData.destinationTrustState = .notTrusted
             }
 
-        case .trustStateChanged(let udid, let state):
-            if sourceDevice?.udid == udid {
-                sourceTrustState = state
-                if state == .trusted, step == .connectSource {
+        case .trustStateChanged(let udid, let trustState):
+            if wizardData.sourceDevice?.udid == udid {
+                wizardData.sourceTrustState = trustState
+                if trustState == .trusted, case .connectSource = state {
                     Task { [weak self] in
                         guard let self else { return }
-                        if let updated = try? await self.service.listDevices().first(where: { $0.udid == udid }) {
+                        if let updated = try? await self.service.listDevices()
+                            .first(where: { $0.udid == udid }) {
                             if Task.isCancelled { return }
-                            self.sourceDevice = updated
+                            self.wizardData.sourceDevice = updated
                         }
                     }
                 }
-            } else if destinationDevice?.udid == udid {
-                destinationTrustState = state
-                if state == .trusted, step == .connectDestination {
+            } else if wizardData.destinationDevice?.udid == udid {
+                wizardData.destinationTrustState = trustState
+                if trustState == .trusted, case .connectDestination = state {
                     Task { [weak self] in
                         guard let self else { return }
-                        if let updated = try? await self.service.listDevices().first(where: { $0.udid == udid }) {
+                        if let updated = try? await self.service.listDevices()
+                            .first(where: { $0.udid == udid }) {
                             if Task.isCancelled { return }
-                            self.destinationDevice = updated
+                            self.wizardData.destinationDevice = updated
                         }
                         if Task.isCancelled { return }
-                        self.step = .transferring
+                        self.state = .transferring
                     }
                 }
             }
@@ -466,8 +480,8 @@ final class iTransferViewModel {
     }
 
     private func buildTransferResult(from apps: [AppInfo]) {
-        guard let progress = transferProgress else {
-            transferResult = TransferResult(items: apps.map {
+        guard let progress = wizardData.transferProgress else {
+            wizardData.transferResult = TransferResult(items: apps.map {
                 TransferItemResult(id: $0.bundleID, app: $0, success: false, archivedURL: nil, error: .cancelled)
             })
             return
@@ -482,6 +496,6 @@ final class iTransferViewModel {
                 error: item.error
             )
         }
-        transferResult = TransferResult(items: results)
+        wizardData.transferResult = TransferResult(items: results)
     }
 }

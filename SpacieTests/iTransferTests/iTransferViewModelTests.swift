@@ -128,7 +128,7 @@ final class iTransferViewModelTests: XCTestCase {
 
     func testProceedFromChooseAction_archiveOnly_jumpsToTransferring() {
         let vm = makeViewModel()
-        vm.step = .chooseAction
+        vm.state = .chooseAction
         vm.archiveOnly = true
 
         vm.proceedFromChooseAction()
@@ -138,7 +138,7 @@ final class iTransferViewModelTests: XCTestCase {
 
     func testProceedFromChooseAction_archiveAndInstall_goesToConnectDestination() {
         let vm = makeViewModel()
-        vm.step = .chooseAction
+        vm.state = .chooseAction
         vm.archiveOnly = false
 
         vm.proceedFromChooseAction()
@@ -150,7 +150,7 @@ final class iTransferViewModelTests: XCTestCase {
 
     func testReset_clearsAllState() {
         let vm = makeViewModel()
-        vm.step = .result
+        vm.state = .result
         vm.selectedBundleIDs = ["com.a"]
         vm.archiveOnly = false
         vm.availableApps = [AppInfo(
@@ -176,5 +176,44 @@ final class iTransferViewModelTests: XCTestCase {
         let vm = makeViewModel()
         vm.selectedBundleIDs = ["a", "b", "c"]
         XCTAssertEqual(vm.selectedAppsCount, 3)
+    }
+
+    // MARK: - State invariants (Sprint 4.5: single-state enum)
+
+    /// Sprint 4 audit finding #4: `isWaitingForSource && step != .connectSource`
+    /// used to be representable with the old flat-flag VM. With the enum
+    /// state machine, isWaitingForSource is computed from the case, so the
+    /// combination is structurally impossible.
+    func testIsWaitingForSource_isFalse_whenStepIsNotConnectSource() {
+        let vm = makeViewModel()
+        vm.state = .selectApps(SelectAppsSubstate())
+        XCTAssertFalse(vm.isWaitingForSource,
+                       "isWaitingForSource must be false outside .connectSource")
+    }
+
+    func testIsWaitingForSource_isTrue_onlyWhenStateCarriesIsWaiting() {
+        let vm = makeViewModel()
+        vm.state = .connectSource(ConnectDeviceSubstate(isWaiting: true))
+        XCTAssertTrue(vm.isWaitingForSource)
+
+        vm.state = .connectSource(ConnectDeviceSubstate(isWaiting: false))
+        XCTAssertFalse(vm.isWaitingForSource)
+    }
+
+    func testIsLoadingApps_isFalse_outsideSelectAppsStep() {
+        let vm = makeViewModel()
+        vm.state = .transferring
+        XCTAssertFalse(vm.isLoadingApps)
+        vm.state = .result
+        XCTAssertFalse(vm.isLoadingApps)
+    }
+
+    func testIsInstallingDependencies_resetsOnStateTransition() {
+        let vm = makeViewModel()
+        vm.state = .dependencyCheck(DependencyCheckSubstate(isInstallingDependencies: true))
+        XCTAssertTrue(vm.isInstallingDependencies)
+
+        vm.state = .connectSource(ConnectDeviceSubstate())
+        XCTAssertFalse(vm.isInstallingDependencies)
     }
 }

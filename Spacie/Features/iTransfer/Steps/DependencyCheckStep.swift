@@ -169,7 +169,7 @@ struct DependencyCheckStepView: View {
                     appleIDEmail = ""
                     appleIDPassword = ""
                     appleIDCode = ""
-                    viewModel.appleIDLoginError = nil
+                    viewModel.cancelAppleIDLogin()
                 }
                 .buttonStyle(.bordered)
 
