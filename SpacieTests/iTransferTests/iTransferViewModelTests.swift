@@ -17,21 +17,44 @@ final class iTransferViewModelTests: XCTestCase {
 
     // MARK: - Step 1: Dependency Check
 
-    func testCheckDependencies_ready_advancesToConnectSource() async {
+    func testCheckDependencies_readyAndAuthed_advancesToConnectSource() async {
         let service = MockiMobileDeviceService()
         service.dependencyStatusToReturn = .ready(ToolPaths(
             ideviceId: "/opt/homebrew/bin/idevice_id",
             ideviceInfo: "/opt/homebrew/bin/ideviceinfo",
             ideviceinstaller: "/opt/homebrew/bin/ideviceinstaller",
             idevicepair: "/opt/homebrew/bin/idevicepair",
-            brew: "/opt/homebrew/bin/brew"
+            brew: "/opt/homebrew/bin/brew",
+            ipatool: "/opt/homebrew/bin/ipatool"
         ))
+        // checkDependencies also verifies Apple ID auth before advancing — see VM.
+        service.appleIDAuthenticatedToReturn = true
         let vm = makeViewModel(service: service)
 
         await vm.checkDependencies()
 
         XCTAssertEqual(vm.step, .connectSource)
         XCTAssertEqual(service.checkDependenciesCallCount, 1)
+        XCTAssertEqual(service.checkAppleIDAuthCallCount, 1)
+    }
+
+    func testCheckDependencies_readyButNotAuthed_staysOnDependencyCheck() async {
+        let service = MockiMobileDeviceService()
+        service.dependencyStatusToReturn = .ready(ToolPaths(
+            ideviceId: "/opt/homebrew/bin/idevice_id",
+            ideviceInfo: "/opt/homebrew/bin/ideviceinfo",
+            ideviceinstaller: "/opt/homebrew/bin/ideviceinstaller",
+            idevicepair: "/opt/homebrew/bin/idevicepair",
+            brew: "/opt/homebrew/bin/brew",
+            ipatool: "/opt/homebrew/bin/ipatool"
+        ))
+        service.appleIDAuthenticatedToReturn = false
+        let vm = makeViewModel(service: service)
+
+        await vm.checkDependencies()
+
+        XCTAssertEqual(vm.step, .dependencyCheck)
+        XCTAssertFalse(vm.appleIDAuthenticated)
     }
 
     func testCheckDependencies_missing_staysOnDependencyCheck() async {

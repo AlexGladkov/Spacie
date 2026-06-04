@@ -1,6 +1,8 @@
 package com.spacie.core.platform
 
 import com.spacie.core.api.DependencyStatus
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlin.experimental.ExperimentalObjCName
 import kotlin.native.ObjCName
 
@@ -25,18 +27,27 @@ class HomebrewResolver {
         "ipatool"
     )
 
+    private val lock = SynchronizedObject()
     private val cache = HashMap<String, String?>()
 
     /**
      * Resolve the absolute path for a tool by probing known Homebrew prefixes.
      *
+     * Thread-safe: cache reads/writes are guarded by an internal lock so concurrent
+     * callers from different coroutines do not corrupt the underlying [HashMap].
+     *
      * @param toolName the CLI tool name (e.g. "brew", "idevice_id")
      * @return the absolute path to the executable, or null if not found
      */
     fun resolve(toolName: String): String? {
-        if (cache.containsKey(toolName)) return cache[toolName]
+        synchronized(lock) {
+            if (cache.containsKey(toolName)) return cache[toolName]
+        }
         val resolved = probeToolOnDisk(toolName)
-        cache[toolName] = resolved
+        synchronized(lock) {
+            if (cache.containsKey(toolName)) return cache[toolName]
+            cache[toolName] = resolved
+        }
         return resolved
     }
 
@@ -80,7 +91,7 @@ class HomebrewResolver {
      * Invalidate all cached resolution results, forcing re-probing on next access.
      */
     fun invalidateCache() {
-        cache.clear()
+        synchronized(lock) { cache.clear() }
     }
 
     private fun probeToolOnDisk(toolName: String): String? {

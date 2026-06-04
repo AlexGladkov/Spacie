@@ -38,6 +38,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+            implementation("org.jetbrains.kotlinx:atomicfu:0.23.1")
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
