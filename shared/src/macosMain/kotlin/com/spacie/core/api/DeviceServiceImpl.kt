@@ -65,7 +65,8 @@ import kotlin.native.ObjCName
 @ObjCName("SpaDeviceServiceImpl")
 class DeviceServiceImpl(
     private val runner: ProcessRunnerApi = ProcessRunner(),
-    private val resolver: HomebrewResolver = HomebrewResolver()
+    private val resolver: HomebrewResolver = HomebrewResolver(),
+    private val archiveWriter: IpaArchiveWriter = IpaArchiveWriter()
 ) : DeviceServiceApi {
 
     /**
@@ -425,12 +426,7 @@ class DeviceServiceImpl(
                             it[i] = it[i].copy(phase = TransferPhase.ARCHIVING)
                         }
                         emit(TransferProgress(items, i))
-                        writeToArchive(
-                            ipaPath = ipaPath,
-                            app = app,
-                            archiveDir = archiveDir,
-                            fm = fm
-                        )
+                        archiveWriter.write(ipaPath = ipaPath, app = app, archiveDir = archiveDir)
                     }
 
                     // Phase 3: Install on destination device (optional)
@@ -573,7 +569,9 @@ class DeviceServiceImpl(
     private fun parseAppList(data: ByteArray): List<AppInfo> {
         if (data.isEmpty()) return emptyList()
 
-        val nsData: NSData = data.toNSData()
+        val nsData: NSData = data.usePinned { pin ->
+            NSData.dataWithBytes(pin.addressOf(0), length = data.size.toULong()) ?: NSData()
+        }
 
         val plist: Any? = memScoped {
             val errorPtr = alloc<ObjCObjectVar<NSError?>>()
@@ -622,97 +620,7 @@ class DeviceServiceImpl(
 
     private fun stripANSI(s: String): String = DeviceServiceHelpers.stripANSI(s)
 
-    private fun writeToArchive(
-        ipaPath: String,
-        app: AppInfo,
-        archiveDir: String,
-        fm: NSFileManager
-    ) {
-        // Create archive directory if needed
-        fm.createDirectoryAtPath(
-            archiveDir,
-            withIntermediateDirectories = true,
-            attributes = null,
-            error = null
-        )
 
-        // Create unique subdirectory for this archive entry
-        val archiveSubDir = "$archiveDir/${NSUUID().UUIDString}"
-        fm.createDirectoryAtPath(
-            archiveSubDir,
-            withIntermediateDirectories = true,
-            attributes = null,
-            error = null
-        )
 
-        val ipaFilename = ipaPath.substringAfterLast("/")
-        val destIpaPath = "$archiveSubDir/$ipaFilename"
 
-        // Copy IPA to archive
-        memScoped {
-            val errorPtr = alloc<ObjCObjectVar<NSError?>>()
-            val copied = fm.copyItemAtPath(ipaPath, toPath = destIpaPath, error = errorPtr.ptr)
-            if (!copied) {
-                val errMsg = errorPtr.value?.localizedDescription ?: "Unknown error"
-                throw SpacieError.ArchiveWriteFailed(destIpaPath, errMsg)
-            }
-        }
-
-        // Set restrictive permissions (owner read+write only = 0600)
-        fm.setAttributes(
-            mapOf<Any?, Any?>(NSFilePosixPermissions to NSNumber(int = 0b110000000)),
-            ofItemAtPath = destIpaPath,
-            error = null
-        )
-
-        // Get file size for metadata
-        val ipaSize: Long = memScoped {
-            val errorPtr = alloc<ObjCObjectVar<NSError?>>()
-            val attrs = fm.attributesOfItemAtPath(destIpaPath, error = errorPtr.ptr)
-            (attrs?.get(NSFileSize) as? NSNumber)?.longLongValue ?: 0L
-        }
-
-        // Write metadata.json (manual serialization -- no kotlinx-serialization dependency)
-        val now = NSDate().timeIntervalSince1970.toLong()
-        val metaJson = buildMetadataJson(app, ipaSize, now)
-        val metaPath = "$archiveSubDir/metadata.json"
-        metaJson.encodeToByteArray().toNSData().writeToFile(metaPath, atomically = true)
-
-        // Write icon if available
-        app.iconData?.let { iconBytes ->
-            val iconPath = "$archiveSubDir/icon.png"
-            iconBytes.toNSData().writeToFile(iconPath, atomically = true)
-        }
-    }
-
-    private fun buildMetadataJson(app: AppInfo, ipaSize: Long, archivedAt: Long): String {
-        val sb = StringBuilder()
-        sb.append("{")
-        sb.append(""""bundleID":${jsonString(app.bundleID)},""")
-        sb.append(""""displayName":${jsonString(app.displayName)},""")
-        sb.append(""""version":${jsonString(app.version)},""")
-        sb.append(""""shortVersion":${jsonString(app.shortVersion)},""")
-        sb.append(""""ipaSize":$ipaSize,""")
-        sb.append(""""archivedAt":$archivedAt""")
-        sb.append("}")
-        return sb.toString()
-    }
-
-    private fun jsonString(s: String): String {
-        val escaped = s
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        return "\"$escaped\""
-    }
-
-    private fun ByteArray.toNSData(): NSData {
-        if (isEmpty()) return NSData()
-        return usePinned { pin ->
-            NSData.dataWithBytes(pin.addressOf(0), length = size.toULong())
-                ?: NSData()
-        }
-    }
 }
