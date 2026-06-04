@@ -12,6 +12,7 @@ import com.spacie.core.model.TransferItem
 import com.spacie.core.model.TransferPhase
 import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
+import com.spacie.core.api.internal.DeviceServiceHelpers
 import com.spacie.core.platform.HomebrewResolver
 import com.spacie.core.platform.ProcessRunner
 import com.spacie.core.platform.ProcessRunnerApi
@@ -565,17 +566,8 @@ class DeviceServiceImpl(
         )
     }
 
-    private fun parseKeyValueOutput(output: String): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        for (line in output.split("\n")) {
-            val idx = line.indexOf(':')
-            if (idx <= 0) continue
-            val key = line.substring(0, idx).trim()
-            val value = line.substring(idx + 1).trim()
-            if (key.isNotEmpty()) result[key] = value
-        }
-        return result
-    }
+    private fun parseKeyValueOutput(output: String): Map<String, String> =
+        DeviceServiceHelpers.parseKeyValueOutput(output)
 
     @Suppress("UNCHECKED_CAST")
     private fun parseAppList(data: ByteArray): List<AppInfo> {
@@ -626,15 +618,9 @@ class DeviceServiceImpl(
         }
     }
 
-    private fun parseProgressLine(line: String): Double? {
-        val regex = Regex("""(\d+(?:\.\d+)?)\s*%""")
-        val match = regex.find(line) ?: return null
-        val value = match.groupValues[1].toDoubleOrNull() ?: return null
-        return minOf(1.0, value / 100.0)
-    }
+    private fun parseProgressLine(line: String): Double? = DeviceServiceHelpers.parseProgressLine(line)
 
-    private fun stripANSI(s: String): String =
-        s.replace(Regex("\u001B\\[[0-9;]*[mGKHFJA-Z]"), "")
+    private fun stripANSI(s: String): String = DeviceServiceHelpers.stripANSI(s)
 
     private fun writeToArchive(
         ipaPath: String,

@@ -10,6 +10,7 @@ import com.spacie.core.model.TransferItem
 import com.spacie.core.model.TransferPhase
 import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
+import com.spacie.core.api.internal.DeviceServiceHelpers
 import com.spacie.core.platform.ChocolateyResolver
 import com.spacie.core.platform.ProcessRunner
 import com.spacie.core.platform.ProcessRunnerApi
@@ -454,15 +455,7 @@ class WindowsDeviceServiceImpl(
         )
     }
 
-    private fun parseKeyValueOutput(output: String): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        for (line in output.split("\n")) {
-            val idx = line.indexOf(':')
-            if (idx <= 0) continue
-            result[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
-        }
-        return result
-    }
+    private fun parseKeyValueOutput(output: String): Map<String, String> = DeviceServiceHelpers.parseKeyValueOutput(output)
 
     private fun parseAppListXml(data: ByteArray): List<AppInfo> {
         if (data.isEmpty()) return emptyList()
@@ -520,9 +513,5 @@ class WindowsDeviceServiceImpl(
         }
     }
 
-    private fun parseProgressLine(line: String): Double? {
-        val match = Regex("""(\d+(?:\.\d+)?)\s*%""").find(line) ?: return null
-        val percent = match.groupValues[1].toDoubleOrNull() ?: return null
-        return minOf(1.0, percent / 100.0)
-    }
+    private fun parseProgressLine(line: String): Double? = DeviceServiceHelpers.parseProgressLine(line)
 }
