@@ -19,9 +19,20 @@
 		2152443D619E268E330B94E4 /* VisualizationContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 613A733B74426B0C2AFBF606 /* VisualizationContainer.swift */; };
 		24D3EB4FD25C223B0BD2EAE1 /* BreadcrumbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF7940D4A57B0D14972BA97A /* BreadcrumbView.swift */; };
 		283CD4FE2BA3488CF303ED93 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436595534C0ACFBC123A8187 /* ContentView.swift */; };
+		7A1E0AD0260300000000 /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AD1260300000000 /* AppViewModel.swift */; };
 		2D0FE653840CA26E8F160D78 /* iMobileDeviceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D78A83AE538BD39519CF46 /* iMobileDeviceProtocol.swift */; };
 		3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */; };
 		7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */; };
+		7A1E0AB72601E0F100AB0005 /* InstallFromArchiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */; };
+		7A1E0AB92601E0F100AB0006 /* InstallFromArchiveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */; };
+		7A1E0AC026020000A100 /* iTransferStepIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B100 /* iTransferStepIndicator.swift */; };
+		7A1E0AC026020000A200 /* DependencyCheckStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B200 /* DependencyCheckStep.swift */; };
+		7A1E0AC026020000A300 /* ConnectDeviceStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B300 /* ConnectDeviceStep.swift */; };
+		7A1E0AC026020000A400 /* SelectAppsStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B400 /* SelectAppsStep.swift */; };
+		7A1E0AC026020000A500 /* ChooseActionStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B500 /* ChooseActionStep.swift */; };
+		7A1E0AC026020000A600 /* TransferringStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B600 /* TransferringStep.swift */; };
+		7A1E0AC026020000A700 /* ResultStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B700 /* ResultStep.swift */; };
+		7A1E0AC026020000A800 /* iTransferPhaseLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B800 /* iTransferPhaseLabel.swift */; };
 		A1B2C3D4E5F60101 /* KMPInputValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60001 /* KMPInputValidator.swift */; };
 		A1B2C3D4E5F60102 /* KMPScanProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002 /* KMPScanProfile.swift */; };
 		A1B2C3D4E5F60103 /* VolumeModelConversions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60003 /* VolumeModelConversions.swift */; };
@@ -114,6 +125,7 @@
 		41CC17FB1EED665D2E04169C /* SmartScanPrioritizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartScanPrioritizer.swift; sourceTree = "<group>"; };
 		425A2ACA1ED2F065E9E55619 /* SunburstView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstView.swift; sourceTree = "<group>"; };
 		436595534C0ACFBC123A8187 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		7A1E0AD1260300000000 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		47AED639990BE677F360211D /* AppArchiveServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppArchiveServiceTests.swift; sourceTree = "<group>"; };
 		4AB35CFBF929461A911362F2 /* DeepScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepScanner.swift; sourceTree = "<group>"; };
 		4E65E821F23C74AF3A077883 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -154,6 +166,16 @@
 		D74CE0020276507A39B599EA /* SpacieKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpacieKit.xcframework; path = shared/build/XCFrameworks/debug/SpacieKit.xcframework; sourceTree = "<group>"; };
 		D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPDeviceServiceAdapter.swift; sourceTree = "<group>"; };
 		7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapper.swift; sourceTree = "<group>"; };
+		7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallFromArchiveViewModel.swift; sourceTree = "<group>"; };
+		7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallFromArchiveSheet.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B100 /* iTransferStepIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferStepIndicator.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B200 /* DependencyCheckStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DependencyCheckStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B300 /* ConnectDeviceStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectDeviceStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B400 /* SelectAppsStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectAppsStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B500 /* ChooseActionStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChooseActionStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B600 /* TransferringStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferringStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B700 /* ResultStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultStep.swift; sourceTree = "<group>"; };
+		7A1E0AC126020000B800 /* iTransferPhaseLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferPhaseLabel.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60001 /* KMPInputValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPInputValidator.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60002 /* KMPScanProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPScanProfile.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60003 /* VolumeModelConversions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeModelConversions.swift; sourceTree = "<group>"; };
@@ -205,10 +227,28 @@
 			children = (
 				8AA8F1910A9C4E936D4C2F04 /* AppArchiveView.swift */,
 				0F3FF370477BD12395EB631A /* AppArchiveViewModel.swift */,
+				7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */,
+				7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */,
 				94F1AB789AF98AED07FFEA85 /* iTransferView.swift */,
 				BF06C2776345DB571FD48787 /* iTransferViewModel.swift */,
+				7A1E0AC2260200000000 /* Steps */,
 			);
 			path = iTransfer;
+			sourceTree = "<group>";
+		};
+		7A1E0AC2260200000000 /* Steps */ = {
+			isa = PBXGroup;
+			children = (
+				7A1E0AC126020000B100 /* iTransferStepIndicator.swift */,
+				7A1E0AC126020000B200 /* DependencyCheckStep.swift */,
+				7A1E0AC126020000B300 /* ConnectDeviceStep.swift */,
+				7A1E0AC126020000B400 /* SelectAppsStep.swift */,
+				7A1E0AC126020000B500 /* ChooseActionStep.swift */,
+				7A1E0AC126020000B600 /* TransferringStep.swift */,
+				7A1E0AC126020000B700 /* ResultStep.swift */,
+				7A1E0AC126020000B800 /* iTransferPhaseLabel.swift */,
+			);
+			path = Steps;
 			sourceTree = "<group>";
 		};
 		170187D3F75CBDE1F1E5E093 /* Features */ = {
@@ -240,6 +280,7 @@
 		1E9F2C806CEF2F41094E5636 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				7A1E0AD1260300000000 /* AppViewModel.swift */,
 				436595534C0ACFBC123A8187 /* ContentView.swift */,
 				5D5FBC7F9C4A1AA57B3EF90C /* HomeView.swift */,
 				B1455692A18D219841B6421D /* InfoBarView.swift */,
@@ -674,6 +715,16 @@
 			files = (
 				CD670C2A04889AED3FB83D25 /* AppArchiveService.swift in Sources */,
 				0E0F9D91D8B1F84EC75688AA /* AppArchiveView.swift in Sources */,
+				7A1E0AB72601E0F100AB0005 /* InstallFromArchiveViewModel.swift in Sources */,
+				7A1E0AB92601E0F100AB0006 /* InstallFromArchiveSheet.swift in Sources */,
+				7A1E0AC026020000A100 /* iTransferStepIndicator.swift in Sources */,
+				7A1E0AC026020000A200 /* DependencyCheckStep.swift in Sources */,
+				7A1E0AC026020000A300 /* ConnectDeviceStep.swift in Sources */,
+				7A1E0AC026020000A400 /* SelectAppsStep.swift in Sources */,
+				7A1E0AC026020000A500 /* ChooseActionStep.swift in Sources */,
+				7A1E0AC026020000A600 /* TransferringStep.swift in Sources */,
+				7A1E0AC026020000A700 /* ResultStep.swift in Sources */,
+				7A1E0AC026020000A800 /* iTransferPhaseLabel.swift in Sources */,
 				07C01D78FA21E0AD087F5DA7 /* AppArchiveViewModel.swift in Sources */,
 				E823D0392FF5DA60AB0CAC21 /* BlocklistModels.swift in Sources */,
 				24D3EB4FD25C223B0BD2EAE1 /* BreadcrumbView.swift in Sources */,
@@ -682,6 +733,7 @@
 				010D4B63F8C90B0702FF93DA /* CacheValidator.swift in Sources */,
 				3BF8BCF14A6060A5A5126DFF /* CleanupCategory.swift in Sources */,
 				283CD4FE2BA3488CF303ED93 /* ContentView.swift in Sources */,
+				7A1E0AD0260300000000 /* AppViewModel.swift in Sources */,
 				89E8EDA8AD74DAB2E7E438B6 /* DeepScanner.swift in Sources */,
 				C656216B756B8C7EB5F59D11 /* DiskScanner.swift in Sources */,
 				389DCF70EEB3E3D95C9C9A76 /* DropZoneView.swift in Sources */,
