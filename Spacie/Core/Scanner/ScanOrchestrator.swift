@@ -146,6 +146,16 @@ final class ScanOrchestrator {
     /// - Returns: Final ``ScanStats`` on completion, or `nil` if the scan was cancelled
     ///   or smart scan reached its threshold (results are on ``smartScanResult``).
     func startScan(configuration: ScanConfiguration) async -> ScanStats? {
+        // Drain any in-flight scan / rescan before starting new work.
+        //
+        // Without this await, a rescan click while the previous scan was still
+        // winding down would leak the previous Task (overwritten by the new
+        // `scanTask = task` assignment), and both tasks would compete for the
+        // main actor. The symptom was a UI hang on "Refresh" — the old scan's
+        // synchronous `tree.aggregateSizes()` on 5M nodes held main long enough
+        // that the new scan never got time to render its first frame.
+        await drainInflightTasks()
+
         // Reset state
         phase = .red
         shallowTree = nil
@@ -214,6 +224,10 @@ final class ScanOrchestrator {
     }
 
     /// Cancels the scan at any phase. Discards both trees.
+    ///
+    /// Synchronous — only sets the cancellation flag and drops state. To wait
+    /// for the cancelled task to actually exit (e.g. before starting a new
+    /// scan), call [cancelAndWait] instead.
     func cancel() {
         scanTask?.cancel()
         scanTask = nil
@@ -222,6 +236,38 @@ final class ScanOrchestrator {
         shallowTree = nil
         deepTree = nil
         phase = .red
+    }
+
+    /// Cancels the scan and awaits the running task to finish exiting.
+    ///
+    /// Use this before starting a new scan from the same orchestrator instance
+    /// to guarantee the old task no longer holds the main actor when the new
+    /// one starts (otherwise both tasks race on shared state).
+    func cancelAndWait() async {
+        let scan = scanTask
+        let rescan = rescanTask
+        scan?.cancel()
+        rescan?.cancel()
+        scanTask = nil
+        rescanTask = nil
+        _ = await scan?.value
+        _ = await rescan?.value
+        shallowTree = nil
+        deepTree = nil
+        phase = .red
+    }
+
+    /// Drains in-flight scan + rescan tasks without resetting state.
+    /// Used internally by [startScan] before resetting orchestrator state.
+    private func drainInflightTasks() async {
+        let scan = scanTask
+        let rescan = rescanTask
+        scan?.cancel()
+        rescan?.cancel()
+        scanTask = nil
+        rescanTask = nil
+        _ = await scan?.value
+        _ = await rescan?.value
     }
 
     // MARK: - Deletion Handling

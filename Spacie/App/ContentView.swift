@@ -680,16 +680,29 @@ final class AppViewModel {
     }
 
     /// Discards the current tree and rescans the same volume from scratch.
+    ///
+    /// Awaits a full drain of any in-flight scan/rescan/validation tasks before
+    /// starting the new scan. Without this, clicking "Refresh" while the
+    /// previous scan was still aggregating sizes (synchronous O(N) on main)
+    /// produced a UI hang — both old and new scans competed for the main
+    /// actor and corrupted each other's tree state.
     func rescan() async {
+        // 1. Cancel and wait for everything in flight to actually exit.
+        cancelScan()
+        if let task = scanTask { _ = await task.value }
+        if let task = cacheValidationTask { _ = await task.value }
+        await orchestrator.cancelAndWait()
+
+        // 2. Now safe to clear references and start fresh.
         tree = nil
         vizState = nil
         scanState = .idle
         scanPhase = .red
         dataIsStale = false
         cacheStatus = .none
-        // Invalidate the cache so a full scan is performed
         scanCache?.invalidate()
         scanCache = nil
+
         await startScan()
     }
 
