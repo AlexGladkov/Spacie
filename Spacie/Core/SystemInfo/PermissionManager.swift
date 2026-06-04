@@ -2,31 +2,49 @@ import Foundation
 import AppKit
 import SpacieKit
 
+// MARK: - PermissionManaging
+
+/// Abstraction over Full Disk Access permission checks so SwiftUI views can
+/// swap in mock implementations for previews and tests without depending on
+/// the real KMP service.
+///
+/// Methods are marked `@MainActor` individually (not the protocol) so the
+/// type can be used as an `EnvironmentKey.Value` — those keys cannot have
+/// main-actor-isolated default values.
+protocol PermissionManaging: AnyObject, Sendable {
+    @MainActor var hasFullDiskAccess: Bool { get }
+
+    @MainActor @discardableResult
+    func checkFullDiskAccess() -> Bool
+
+    @MainActor func openFullDiskAccessSettings()
+    @MainActor func openStorageSettings()
+}
+
 // MARK: - PermissionManager
 
-/// Checks and manages Full Disk Access (FDA) permission status.
+/// Default implementation backed by KMP `SpaPermissionChecker`.
 ///
-/// Delegates actual permission checking to KMP `SpaPermissionChecker`.
 /// `@MainActor` isolated so the `@Observable` `hasFullDiskAccess` write is
-/// guaranteed to happen on the main thread — fixes the data race where
-/// `checkFullDiskAccess()` (callable from any thread) updated SwiftUI state
-/// without isolation.
+/// guaranteed to happen on the main thread.
 @MainActor
 @Observable
-final class PermissionManager {
+final class PermissionManager: PermissionManaging {
 
     // MARK: - State
 
-    /// Whether the application currently has Full Disk Access.
     private(set) var hasFullDiskAccess: Bool = false
 
     // MARK: - KMP
 
-    private let checker = SpaPermissionChecker()
+    private let checker: SpaPermissionChecker
+
+    init(checker: SpaPermissionChecker = SpaSpacieFactory.shared.createPermissionChecker()) {
+        self.checker = checker
+    }
 
     // MARK: - Public API
 
-    /// Probes TCC-protected paths to determine if Full Disk Access is granted.
     @discardableResult
     func checkFullDiskAccess() -> Bool {
         let result = checker.checkFullDiskAccess()
@@ -34,13 +52,45 @@ final class PermissionManager {
         return result
     }
 
-    /// Opens System Settings directly to the Full Disk Access privacy pane.
     func openFullDiskAccessSettings() {
         checker.openFullDiskAccessSettings()
     }
 
-    /// Opens System Settings directly to the Storage management pane.
     func openStorageSettings() {
         checker.openStorageSettings()
     }
 }
+
+// MARK: - MockPermissionManager
+
+#if DEBUG
+/// In-memory implementation for SwiftUI Previews and unit tests.
+@MainActor
+@Observable
+final class MockPermissionManager: PermissionManaging {
+
+    var hasFullDiskAccess: Bool
+
+    private(set) var checkCallCount = 0
+    private(set) var openFullDiskAccessCallCount = 0
+    private(set) var openStorageCallCount = 0
+
+    init(hasFullDiskAccess: Bool = true) {
+        self.hasFullDiskAccess = hasFullDiskAccess
+    }
+
+    @discardableResult
+    func checkFullDiskAccess() -> Bool {
+        checkCallCount += 1
+        return hasFullDiskAccess
+    }
+
+    func openFullDiskAccessSettings() {
+        openFullDiskAccessCallCount += 1
+    }
+
+    func openStorageSettings() {
+        openStorageCallCount += 1
+    }
+}
+#endif

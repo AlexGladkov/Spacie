@@ -34,9 +34,9 @@ private fun NSData.toByteArray(): ByteArray {
 
 @OptIn(ExperimentalObjCName::class)
 @ObjCName("SpaProcessRunner")
-actual class ProcessRunner actual constructor() {
+actual class ProcessRunner actual constructor() : ProcessRunnerApi {
 
-    actual suspend fun run(
+    actual override suspend fun run(
         executablePath: String,
         arguments: List<String>,
         timeoutSeconds: Double?,
@@ -126,7 +126,7 @@ actual class ProcessRunner actual constructor() {
         }
     }
 
-    actual suspend fun runWithLineOutput(
+    actual override suspend fun runWithLineOutput(
         executablePath: String,
         arguments: List<String>,
         timeoutSeconds: Double?,

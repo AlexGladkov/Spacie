@@ -12,6 +12,7 @@ import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
 import com.spacie.core.platform.ChocolateyResolver
 import com.spacie.core.platform.ProcessRunner
+import com.spacie.core.platform.ProcessRunnerApi
 import com.spacie.core.platform.pathExists
 import com.spacie.core.validation.InputValidator
 import kotlinx.coroutines.CancellationException
@@ -34,10 +35,16 @@ import javax.xml.parsers.DocumentBuilderFactory
  * Uses [ChocolateyResolver] for tool discovery and [ProcessRunner] for
  * invoking libimobiledevice / ipatool CLI tools.
  */
-class WindowsDeviceServiceImpl : DeviceServiceApi {
+class WindowsDeviceServiceImpl(
+    private val runner: ProcessRunnerApi = ProcessRunner(),
+    private val resolver: ChocolateyResolver = ChocolateyResolver()
+) : DeviceServiceApi {
 
-    private val runner = ProcessRunner()
-    private val resolver = ChocolateyResolver()
+    /**
+     * Bound to in-flight observation / transfer coroutines (see [cancel]). The
+     * previous version allocated this scope but never `launch`-ed work into it,
+     * so cancellation was a silent no-op.
+     */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // -- Dependencies --
@@ -410,6 +417,13 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         }.asCommonFlow()
     }
 
+    /**
+     * Cancels the service-owned scope. The cold `flow {}` blocks returned by
+     * [observeDevices] / [transferApps] are stopped by their **collector's**
+     * cancellation, not this scope — cancel the coroutine that collects the flow
+     * to stop a transfer. This call covers any background work launched
+     * internally by future versions of the service.
+     */
     override fun cancel() {
         scope.cancel()
     }

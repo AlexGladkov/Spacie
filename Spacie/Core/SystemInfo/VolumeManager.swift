@@ -2,23 +2,34 @@ import Foundation
 import AppKit
 import SpacieKit
 
+// MARK: - VolumeManaging
+
+/// Abstraction over mounted-volume discovery so views/tests can mock the
+/// volume list and APFS snapshots without touching the filesystem or KMP.
+///
+/// Per-member `@MainActor` isolation lets the type conform without forcing
+/// the protocol itself main-actor, which is required by `EnvironmentKey`.
+protocol VolumeManaging: AnyObject, Sendable {
+    @MainActor var volumes: [VolumeInfo] { get }
+    @MainActor func refresh()
+    @MainActor func startMonitoring()
+    @MainActor func stopMonitoring()
+    @MainActor func listAPFSSnapshots(volumeUUID: String) async -> [APFSSnapshotInfo]
+}
+
 // MARK: - VolumeManager
 
-/// Discovers and monitors mounted volumes on the system.
-///
-/// Delegates volume enumeration to KMP `SpaVolumeManagerApi`.
-/// Keeps NSWorkspace notifications in Swift to trigger refreshes.
-/// `listAPFSSnapshots` remains Swift-only (diskutil parsing).
-///
-/// `@MainActor` isolated: all mutations to `volumes` happen on the main thread,
-/// matching the actor SwiftUI reads from. The NSWorkspace observers post on
-/// `.main` queue so the `refresh()` call inside is already main-isolated.
+/// Discovers and monitors mounted volumes via KMP `SpaVolumeManagerApi`.
+/// NSWorkspace notifications drive refreshes (KMP monitoring is intentionally
+/// not started — running both would double-fire).
 @MainActor
 @Observable
-final class VolumeManager {
+final class VolumeManager: VolumeManaging {
 
     // MARK: - Singleton
 
+    /// Convenience singleton used by legacy call sites. New code should inject
+    /// `any VolumeManaging` through the SwiftUI environment instead.
     static let shared = VolumeManager()
 
     // MARK: - Published State
@@ -27,20 +38,10 @@ final class VolumeManager {
 
     // MARK: - KMP
 
-    private let kmpManager: any SpaVolumeManagerApi = SpaSpacieFactory.shared.createVolumeManager()
+    private let kmpManager: any SpaVolumeManagerApi
 
     // MARK: - Private
 
-    /// `nonisolated(unsafe)` because we need to read these in `deinit` (which
-    /// is nonisolated on Swift 6 `@MainActor` classes). The properties are
-    /// only ever written on the main actor (from `startMonitoring` /
-    /// `stopMonitoring`), and `deinit` only fires after the last reference is
-    /// released — so there is no concurrent writer to race against.
-    // ObservationIgnored: these are infrastructure, not UI state.
-    // nonisolated(unsafe): needed so the nonisolated `deinit` can read them
-    // for one-shot observer cleanup. They are only mutated on the main actor
-    // (start/stopMonitoring), and deinit only runs after the last reference
-    // is dropped — so no concurrent writer exists at cleanup time.
     @ObservationIgnored
     nonisolated(unsafe) private var mountObserver: NSObjectProtocol?
     @ObservationIgnored
@@ -48,13 +49,15 @@ final class VolumeManager {
 
     // MARK: - Initialization
 
-    private init() {
+    init(
+        kmpManager: any SpaVolumeManagerApi = SpaSpacieFactory.shared.createVolumeManager()
+    ) {
+        self.kmpManager = kmpManager
         refresh()
     }
 
     // MARK: - Public API
 
-    /// Reloads the list of mounted volumes from KMP.
     func refresh() {
         kmpManager.refresh()
         let raw = kmpManager.volumes.value
@@ -62,10 +65,6 @@ final class VolumeManager {
         volumes = kmpVolumes.map { $0.toSwift() }
     }
 
-    /// Begins observing NSWorkspace mount and unmount notifications.
-    /// Note: KMP monitoring is NOT started — Swift handles notifications
-    /// and triggers `refresh()` which re-reads KMP data. Starting both
-    /// would double-subscribe to the same NSWorkspace notifications.
     func startMonitoring() {
         stopMonitoring()
 
@@ -89,7 +88,6 @@ final class VolumeManager {
         }
     }
 
-    /// Stops observing mount/unmount notifications.
     func stopMonitoring() {
         let center = NSWorkspace.shared.notificationCenter
         if let observer = mountObserver {
@@ -103,7 +101,7 @@ final class VolumeManager {
     }
 
     /// Attempts to list APFS snapshots for the given volume UUID.
-    /// Remains in Swift — KMP does not provide diskutil parsing.
+    /// Stays in Swift — KMP does not provide diskutil parsing.
     func listAPFSSnapshots(volumeUUID: String) async -> [APFSSnapshotInfo] {
         await withCheckedContinuation { continuation in
             let process = Process()
@@ -184,12 +182,35 @@ final class VolumeManager {
     }
 
     deinit {
-        // Synchronous, thread-safe direct removal: NotificationCenter.removeObserver
-        // is callable from any thread, and these stored properties are only
-        // mutated on the main actor — so reading them at deinit-time is safe
-        // because no one else holds a reference (deinit implies last reference).
         let center = NSWorkspace.shared.notificationCenter
         if let observer = mountObserver { center.removeObserver(observer) }
         if let observer = unmountObserver { center.removeObserver(observer) }
     }
 }
+
+// MARK: - MockVolumeManager
+
+#if DEBUG
+@MainActor
+@Observable
+final class MockVolumeManager: VolumeManaging {
+
+    var volumes: [VolumeInfo]
+    var snapshotsByUUID: [String: [APFSSnapshotInfo]] = [:]
+
+    private(set) var refreshCallCount = 0
+    private(set) var isMonitoring = false
+
+    init(volumes: [VolumeInfo] = []) {
+        self.volumes = volumes
+    }
+
+    func refresh() { refreshCallCount += 1 }
+    func startMonitoring() { isMonitoring = true }
+    func stopMonitoring() { isMonitoring = false }
+
+    func listAPFSSnapshots(volumeUUID: String) async -> [APFSSnapshotInfo] {
+        snapshotsByUUID[volumeUUID] ?? []
+    }
+}
+#endif

@@ -1,3 +1,6 @@
 package com.spacie.core.api
 
-actual fun createPlatformDeviceService(): DeviceServiceApi = WindowsDeviceServiceImpl()
+import com.spacie.core.platform.ProcessRunnerApi
+
+actual fun createPlatformDeviceService(runner: ProcessRunnerApi): DeviceServiceApi =
+    WindowsDeviceServiceImpl(runner = runner)

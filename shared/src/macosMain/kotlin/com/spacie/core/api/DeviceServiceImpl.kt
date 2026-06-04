@@ -14,6 +14,7 @@ import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
 import com.spacie.core.platform.HomebrewResolver
 import com.spacie.core.platform.ProcessRunner
+import com.spacie.core.platform.ProcessRunnerApi
 import com.spacie.core.platform.pathExists
 import com.spacie.core.validation.InputValidator
 import kotlinx.cinterop.BetaInteropApi
@@ -61,10 +62,16 @@ import kotlin.native.ObjCName
  */
 @OptIn(ExperimentalObjCName::class)
 @ObjCName("SpaDeviceServiceImpl")
-class DeviceServiceImpl : DeviceServiceApi {
+class DeviceServiceImpl(
+    private val runner: ProcessRunnerApi = ProcessRunner(),
+    private val resolver: HomebrewResolver = HomebrewResolver()
+) : DeviceServiceApi {
 
-    private val runner = ProcessRunner()
-    private val resolver = HomebrewResolver()
+    /**
+     * Bound to active [observeDevices] / [transferApps] flows so that [cancel]
+     * actually stops them. Previously this scope existed but no work was launched
+     * through it, so `service.cancel()` was a no-op (see Sprint 3 audit).
+     */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // -- Dependencies --
@@ -517,6 +524,13 @@ class DeviceServiceImpl : DeviceServiceApi {
 
     // -- Cancellation --
 
+    /**
+     * Cancels the service-owned scope. Note that the cold `flow {}` blocks returned
+     * by [observeDevices] / [transferApps] honour their **collector's** cancellation,
+     * not this scope — so the primary way to stop a transfer is to cancel the
+     * coroutine that collects the flow. This call exists as an extra safety net
+     * for any background work the service launches internally in the future.
+     */
     override fun cancel() {
         scope.cancel()
     }

@@ -34,26 +34,36 @@ struct TrashResult: Sendable {
     let trashURL: URL?
 }
 
+// MARK: - TrashManaging
+
+/// Abstraction over move-to-trash behaviour so views/tests can mock deletion.
+///
+/// Methods are `@MainActor` individually (not the protocol) to keep
+/// `EnvironmentKey.Value` conformance buildable.
+protocol TrashManaging: Sendable {
+    @MainActor func moveToTrash(url: URL) async throws -> URL
+    @MainActor func moveToTrash(urls: [URL]) async throws -> [TrashResult]
+    @MainActor func trashSize() async -> UInt64
+}
+
 // MARK: - TrashManager
 
-/// Manages safe deletion of files by moving them to the macOS Trash.
-///
-/// Blocklist checks remain in Swift. Actual trash operations delegate to KMP.
-/// `@MainActor` isolated because the embedded KMP `SpaTrashService` is an
-/// ObjC class without Sendable conformance — main-actor isolation lets us
-/// drop the `@unchecked Sendable` hack and keeps callers safe.
+/// Default implementation. Blocklist checks remain in Swift; KMP performs the
+/// actual trash operation.
 @MainActor
-struct TrashManager {
+struct TrashManager: TrashManaging {
 
-    private let kmpTrash = SpaTrashService()
+    private let kmpTrash: SpaTrashService
+
+    init(kmpTrash: SpaTrashService = SpaSpacieFactory.shared.createTrashService()) {
+        self.kmpTrash = kmpTrash
+    }
 
     // MARK: - Single Item
 
-    /// Moves a single file or directory to the macOS Trash.
     func moveToTrash(url: URL) async throws -> URL {
         let path = url.path
 
-        // Pre-check blocklist (Swift-only)
         let permission = BlocklistManager.checkPermission(for: path)
         switch permission {
         case .blocked(let reason):
@@ -78,7 +88,6 @@ struct TrashManager {
 
     // MARK: - Batch
 
-    /// Moves multiple files or directories to the macOS Trash.
     func moveToTrash(urls: [URL]) async throws -> [TrashResult] {
         var results: [TrashResult] = []
         results.reserveCapacity(urls.count)
@@ -86,19 +95,9 @@ struct TrashManager {
         for url in urls {
             do {
                 let trashURL = try await moveToTrash(url: url)
-                results.append(TrashResult(
-                    url: url,
-                    success: true,
-                    error: nil,
-                    trashURL: trashURL
-                ))
+                results.append(TrashResult(url: url, success: true, error: nil, trashURL: trashURL))
             } catch let trashError as TrashError {
-                results.append(TrashResult(
-                    url: url,
-                    success: false,
-                    error: trashError,
-                    trashURL: nil
-                ))
+                results.append(TrashResult(url: url, success: false, error: trashError, trashURL: nil))
             } catch {
                 results.append(TrashResult(
                     url: url,
@@ -114,10 +113,8 @@ struct TrashManager {
 
     // MARK: - Trash Size
 
-    /// Calculates the total size of the current user's Trash directory.
     func trashSize() async -> UInt64 {
         do {
-            // KMP Long → KotlinLong (NSNumber subclass) in Swift
             let result = try await kmpTrash.trashSize()
             let size = (result as NSNumber).int64Value
             return size >= 0 ? UInt64(size) : 0
@@ -126,3 +123,38 @@ struct TrashManager {
         }
     }
 }
+
+// MARK: - MockTrashManager
+
+#if DEBUG
+@MainActor
+final class MockTrashManager: TrashManaging {
+
+    var trashedURLs: [URL] = []
+    var totalSize: UInt64 = 0
+    var failureForPath: ((String) -> TrashError?)?
+
+    func moveToTrash(url: URL) async throws -> URL {
+        if let error = failureForPath?(url.path) { throw error }
+        trashedURLs.append(url)
+        return url.appendingPathExtension("trashed")
+    }
+
+    func moveToTrash(urls: [URL]) async throws -> [TrashResult] {
+        urls.map { url in
+            if let error = failureForPath?(url.path) {
+                return TrashResult(url: url, success: false, error: error, trashURL: nil)
+            }
+            trashedURLs.append(url)
+            return TrashResult(
+                url: url,
+                success: true,
+                error: nil,
+                trashURL: url.appendingPathExtension("trashed")
+            )
+        }
+    }
+
+    func trashSize() async -> UInt64 { totalSize }
+}
+#endif

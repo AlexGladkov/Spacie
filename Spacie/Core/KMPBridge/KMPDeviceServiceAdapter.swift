@@ -20,7 +20,27 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
 
     // MARK: - KMP service
 
-    private let kmpService: any SpaDeviceServiceApi = SpaSpacieFactory.shared.createDeviceService()
+    // nonisolated(unsafe) — KMP ObjC types are not Sendable; needed for deinit access.
+    nonisolated(unsafe) private let kmpService: any SpaDeviceServiceApi
+
+    /// Default initializer wires the production KMP factory.
+    init() {
+        self.kmpService = SpaSpacieFactory.shared.createDeviceService()
+    }
+
+    /// Test/preview initializer that accepts a pre-built KMP service.
+    ///
+    /// Allows unit tests to inject a fake `SpaDeviceServiceApi` (e.g. constructed
+    /// with a `FakeProcessRunner` via `SpaSpacieFactory` overrides) so the
+    /// adapter's error mapping, polling loop, and transfer orchestration can be
+    /// exercised without spawning real binaries.
+    init(kmpService: any SpaDeviceServiceApi) {
+        self.kmpService = kmpService
+    }
+
+    deinit {
+        kmpService.cancel()
+    }
 
     // MARK: - checkDependencies
 
@@ -101,7 +121,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
     nonisolated func observeDevices(pollingInterval: TimeInterval) -> AsyncStream<DeviceEvent> {
         let clampedInterval = max(pollingInterval, 1.0)
         return AsyncStream { continuation in
-            let task = Task {
+            let task = Task.detached { [self] in
                 var knownUDIDs = Set<String>()
                 var knownTrustStates: [String: TrustState] = [:]
 
@@ -259,7 +279,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
         shouldInstall: Bool
     ) -> AsyncThrowingStream<TransferProgress, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = Task.detached { [self] in
                 var items = apps.map { TransferItem(id: $0.bundleID, app: $0) }
                 let tempBase = FileManager.default.temporaryDirectory
 
@@ -356,109 +376,8 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
     }
 }
 
-// MARK: - SpaDeviceInfo → DeviceInfo
-
-private extension SpaDeviceInfo {
-
-    func toSwift() -> DeviceInfo {
-        DeviceInfo(
-            udid: udid,
-            deviceName: deviceName,
-            productType: productType,
-            productVersion: productVersion,
-            buildVersion: buildVersion
-        )
-    }
-}
-
-// MARK: - SpaAppInfo → AppInfo
-
-private extension SpaAppInfo {
-
-    func toSwift() -> AppInfo {
-        // Kotlin `Long?` is bridged as `KotlinLong?` (which is `NSNumber`-based).
-        // Guard against negative values before converting to UInt64.
-        let safeipaSize: UInt64?
-        if let boxed = ipaSize {
-            let raw = boxed.int64Value
-            safeipaSize = raw >= 0 ? UInt64(raw) : nil
-        } else {
-            safeipaSize = nil
-        }
-
-        // Convert KotlinByteArray → Data by iterating individual bytes.
-        let iconBytes: Data?
-        if let ba = iconData {
-            let count = Int(ba.size)
-            var bytes = [UInt8](repeating: 0, count: count)
-            for idx in 0 ..< count {
-                bytes[idx] = UInt8(bitPattern: ba.get(index: Int32(idx)))
-            }
-            iconBytes = Data(bytes)
-        } else {
-            iconBytes = nil
-        }
-
-        return AppInfo(
-            bundleID: bundleID,
-            displayName: displayName,
-            version: version,
-            shortVersion: shortVersion,
-            ipaSize: safeipaSize,
-            iconData: iconBytes
-        )
-    }
-}
-
-// MARK: - SpaTrustState → TrustState
-
-private extension SpaTrustState {
-
-    func toSwift() -> TrustState {
-        // SpaTrustState is a KotlinEnum; compare by identity to the singleton entries.
-        if self === SpaTrustState.trusted {
-            return .trusted
-        } else if self === SpaTrustState.dialogShown {
-            return .dialogShown
-        } else {
-            return .notTrusted
-        }
-    }
-}
-
-// MARK: - SpaDependencyStatus → DependencyStatus
-
-private extension SpaDependencyStatus {
-
-    func toSwift() -> DependencyStatus {
-        if let pmMissing = self as? SpaDependencyStatus.SpaDependencyStatusPackageManagerMissing {
-            _ = pmMissing // Homebrew on macOS
-            return .homebrewMissing
-        }
-
-        if let missing = self as? SpaDependencyStatus.SpaDependencyStatusMissing {
-            return .missing(tools: missing.tools)
-        }
-
-        if let ready = self as? SpaDependencyStatus.SpaDependencyStatusReady {
-            let paths = ready.toolPaths
-            // Build ToolPaths from the dictionary; fall back to empty strings if a
-            // key is unexpectedly absent (should not happen in practice).
-            let toolPaths = ToolPaths(
-                ideviceId: paths["idevice_id"] ?? "",
-                ideviceInfo: paths["ideviceinfo"] ?? "",
-                ideviceinstaller: paths["ideviceinstaller"] ?? "",
-                idevicepair: paths["idevicepair"] ?? "",
-                brew: paths["brew"] ?? "",
-                ipatool: paths["ipatool"] ?? ""
-            )
-            return .ready(toolPaths)
-        }
-
-        // Fallback — should be unreachable with a correct KMP implementation.
-        return .homebrewMissing
-    }
-}
+// Model conversions (SpaDeviceInfo, SpaAppInfo, SpaTrustState, SpaDependencyStatus)
+// are in DeviceModelConversions.swift
 
 // MARK: - Error mapping
 
@@ -546,6 +465,27 @@ private func mapKMPError(_ error: Error) -> iMobileDeviceError {
         let required = e.required >= 0 ? UInt64(e.required) : 0
         let available = e.available >= 0 ? UInt64(e.available) : 0
         return .insufficientDiskSpace(required: required, available: available)
+    }
+
+    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInvalidUDID {
+        return .invalidUDID(udid: e.udid)
+    }
+
+    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInvalidBundleID {
+        return .invalidBundleID(bundleID: e.bundleID)
+    }
+
+    // Scan/Duplicate errors — not expected from DeviceService, but map gracefully.
+    if kotlinException is SpaSpacieError.SpaSpacieErrorScanFailed
+        || kotlinException is SpaSpacieError.SpaSpacieErrorScanCancelled
+        || kotlinException is SpaSpacieError.SpaSpacieErrorPathNotAccessible
+        || kotlinException is SpaSpacieError.SpaSpacieErrorDuplicateReadFailed
+        || kotlinException is SpaSpacieError.SpaSpacieErrorDuplicateCancelled {
+        return .processExitedWithError(
+            tool: "KMP",
+            exitCode: -1,
+            stderr: error.localizedDescription
+        )
     }
 
     // Generic fallback: surface the error's localised description.
