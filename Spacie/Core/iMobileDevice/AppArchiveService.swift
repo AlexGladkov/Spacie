@@ -84,17 +84,17 @@ actor AppArchiveService: AppArchiveProtocol {
     /// Root directory for IPA archives.
     ///
     /// Returns the user-configured path (stored under `"iOSArchiveDirectory"` in
-    /// `UserDefaults`) when it is set and still points to a valid directory.
-    /// Falls back to ``defaultArchiveDirectory`` otherwise.
+    /// `UserDefaults`) when set; otherwise falls back to ``defaultArchiveDirectory``.
+    ///
+    /// A previously-configured path is **not** silently replaced with the default
+    /// when the directory has been deleted — that would surface stale archives
+    /// from the default location to a user who intentionally chose a custom
+    /// folder. Callers (and the listing/write code) treat a missing directory
+    /// as "no archives yet".
     nonisolated var archiveDirectory: URL {
         if let customPath = UserDefaults.standard.string(forKey: "iOSArchiveDirectory"),
            !customPath.isEmpty {
-            let url = URL(fileURLWithPath: customPath)
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-               isDir.boolValue {
-                return url
-            }
+            return URL(fileURLWithPath: customPath)
         }
         return Self.defaultArchiveDirectory
     }

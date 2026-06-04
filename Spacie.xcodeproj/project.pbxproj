@@ -21,6 +21,7 @@
 		283CD4FE2BA3488CF303ED93 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436595534C0ACFBC123A8187 /* ContentView.swift */; };
 		2D0FE653840CA26E8F160D78 /* iMobileDeviceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D78A83AE538BD39519CF46 /* iMobileDeviceProtocol.swift */; };
 		3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */; };
+		7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */; };
 		A1B2C3D4E5F60101 /* KMPInputValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60001 /* KMPInputValidator.swift */; };
 		A1B2C3D4E5F60102 /* KMPScanProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002 /* KMPScanProfile.swift */; };
 		A1B2C3D4E5F60103 /* VolumeModelConversions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60003 /* VolumeModelConversions.swift */; };
@@ -52,6 +53,7 @@
 		A087B6FD7825B8BE512CA769 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7FE78D58E198718FDC1BFEC /* SettingsView.swift */; };
 		A885E0ECE73C197ACA8312BC /* SpacieKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D74CE0020276507A39B599EA /* SpacieKit.xcframework */; };
 		AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */; };
+		7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */; };
 		AC8D799C10433E4857C368EB /* BuiltInCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED018428B36C3363279DE186 /* BuiltInCategories.swift */; };
 		B3215625D3C1B518EC408126 /* AppArchiveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47AED639990BE677F360211D /* AppArchiveServiceTests.swift */; };
 		B9EE04D4B57AC9D08D41BB9C /* VolumeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D0DBFD6F0C3865ADDEE0CF /* VolumeManager.swift */; };
@@ -151,6 +153,7 @@
 		D10A1429C05C9048D4591E74 /* TreemapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreemapView.swift; sourceTree = "<group>"; };
 		D74CE0020276507A39B599EA /* SpacieKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpacieKit.xcframework; path = shared/build/XCFrameworks/debug/SpacieKit.xcframework; sourceTree = "<group>"; };
 		D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPDeviceServiceAdapter.swift; sourceTree = "<group>"; };
+		7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapper.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60001 /* KMPInputValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPInputValidator.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60002 /* KMPScanProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPScanProfile.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60003 /* VolumeModelConversions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeModelConversions.swift; sourceTree = "<group>"; };
@@ -164,6 +167,7 @@
 		F4393ECD1E5F5D71C8496610 /* FileNode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileNode.swift; sourceTree = "<group>"; };
 		F7FE78D58E198718FDC1BFEC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferViewModelTests.swift; sourceTree = "<group>"; };
+		7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapperTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -253,6 +257,14 @@
 				FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */,
 			);
 			path = iTransferTests;
+			sourceTree = "<group>";
+		};
+		7A1E0AB62601E0F100AB0004 /* KMPBridgeTests */ = {
+			isa = PBXGroup;
+			children = (
+				7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */,
+			);
+			path = KMPBridgeTests;
 			sourceTree = "<group>";
 		};
 		2B7A4849D0DEC0B775D1EFB9 /* Cache */ = {
@@ -346,6 +358,7 @@
 			isa = PBXGroup;
 			children = (
 				D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */,
+				7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */,
 				A1B2C3D4E5F60001 /* KMPInputValidator.swift */,
 				A1B2C3D4E5F60002 /* KMPScanProfile.swift */,
 				A1B2C3D4E5F60003 /* VolumeModelConversions.swift */,
@@ -514,6 +527,7 @@
 				35C9F075D66BB0029A98E92C /* FileTreeTests */,
 				2680EF500F722055039EDC5E /* iTransferTests */,
 				62D81186479B1969B012573B /* ScannerTests */,
+				7A1E0AB62601E0F100AB0004 /* KMPBridgeTests */,
 			);
 			path = SpacieTests;
 			sourceTree = "<group>";
@@ -680,6 +694,7 @@
 				734995BEE6E87CA82828CEF9 /* HomeView.swift in Sources */,
 				D8A94CD4608A3031B7F8FCAE /* InfoBarView.swift in Sources */,
 				3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */,
+				7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */,
 				A1B2C3D4E5F60101 /* KMPInputValidator.swift in Sources */,
 				A1B2C3D4E5F60102 /* KMPScanProfile.swift in Sources */,
 				A1B2C3D4E5F60103 /* VolumeModelConversions.swift in Sources */,
@@ -734,6 +749,7 @@
 				4E7EBEA251592857F35BF323 /* InputValidatorTests.swift in Sources */,
 				C681EE7E36B8DFA3D65E8027 /* ScannerSizeInvariantTests.swift in Sources */,
 				AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */,
+				7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

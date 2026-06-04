@@ -64,7 +64,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
                 onLine(line)
             }) { error in
                 if let error {
-                    continuation.resume(throwing: mapKMPError(error))
+                    continuation.resume(throwing: KMPErrorMapper.map(error))
                 } else {
                     continuation.resume()
                 }
@@ -88,7 +88,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             kmpService.loginAppleID(email: email, password: password, authCode: authCode) { error in
                 if let error {
-                    continuation.resume(throwing: mapKMPError(error))
+                    continuation.resume(throwing: KMPErrorMapper.map(error))
                 } else {
                     continuation.resume()
                 }
@@ -102,7 +102,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
         try await withCheckedThrowingContinuation { continuation in
             kmpService.listDevices { kmpDevices, error in
                 if let error {
-                    continuation.resume(throwing: mapKMPError(error))
+                    continuation.resume(throwing: KMPErrorMapper.map(error))
                     return
                 }
                 let devices = (kmpDevices ?? []).map { $0.toSwift() }
@@ -192,7 +192,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
         try await withCheckedThrowingContinuation { continuation in
             kmpService.listApps(udid: udid) { kmpApps, error in
                 if let error {
-                    continuation.resume(throwing: mapKMPError(error))
+                    continuation.resume(throwing: KMPErrorMapper.map(error))
                     return
                 }
                 let apps = (kmpApps ?? []).map { $0.toSwift() }
@@ -219,7 +219,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
                 },
                 completionHandler: { path, error in
                     if let error {
-                        continuation.resume(throwing: mapKMPError(error))
+                        continuation.resume(throwing: KMPErrorMapper.map(error))
                         return
                     }
                     guard let path else {
@@ -254,7 +254,7 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
                 },
                 completionHandler: { error in
                     if let error {
-                        continuation.resume(throwing: mapKMPError(error))
+                        continuation.resume(throwing: KMPErrorMapper.map(error))
                     } else {
                         continuation.resume()
                     }
@@ -379,119 +379,3 @@ actor KMPDeviceServiceAdapter: iMobileDeviceProtocol {
 // Model conversions (SpaDeviceInfo, SpaAppInfo, SpaTrustState, SpaDependencyStatus)
 // are in DeviceModelConversions.swift
 
-// MARK: - Error mapping
-
-/// Maps a raw `Error` (typically an `NSError` wrapping a `SpaSpacieError` subclass)
-/// to the Swift-native `iMobileDeviceError`.
-///
-/// KMP `@Throws`-annotated suspend functions surface Kotlin exceptions as
-/// `NSError` values. The original Kotlin object is accessible via the
-/// `kotlinException` property injected by the KMP runtime on `NSError`.
-private func mapKMPError(_ error: Error) -> iMobileDeviceError {
-    let nsError = error as NSError
-
-    // Prefer the strongly-typed Kotlin exception when available.
-    let kotlinException = nsError.kotlinException ?? error
-
-    if kotlinException is SpaSpacieError.SpaSpacieErrorPackageManagerNotInstalled {
-        return .homebrewNotInstalled
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorDependencyMissing {
-        return .dependencyMissing(e.tools)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorDependencyInstallFailed {
-        return .dependencyInstallFailed(reason: e.reason)
-    }
-
-    if kotlinException is SpaSpacieError.SpaSpacieErrorTwoFactorRequired {
-        return .twoFactorRequired
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorAuthFailed {
-        return .authFailed(reason: e.reason)
-    }
-
-    if kotlinException is SpaSpacieError.SpaSpacieErrorNotAuthenticated {
-        return .notAuthenticated
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorDeviceNotFound {
-        return .deviceNotFound(udid: e.udid)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorDeviceNotTrusted {
-        return .deviceNotTrusted(udid: e.udid, name: e.name)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorDeviceDisconnected {
-        return .deviceDisconnected(udid: e.udid, during: e.during)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorExtractionFailed {
-        return .extractionFailed(bundleID: e.bundleID, reason: e.reason)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInstallFailed {
-        return .installFailed(bundleID: e.bundleID, reason: e.reason)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorIpaFileNotFound {
-        return .ipaFileNotFound(path: e.path)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorArchiveWriteFailed {
-        return .archiveWriteFailed(path: e.path, reason: e.reason)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorProcessExitedWithError {
-        return .processExitedWithError(tool: e.tool, exitCode: e.exitCode, stderr: e.stderr)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorProcessTimeout {
-        return .processTimeout(tool: e.tool, timeout: e.timeout)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorAppListParseFailed {
-        return .appListParseFailed(reason: e.reason, rawOutput: e.rawOutput)
-    }
-
-    if kotlinException is SpaSpacieError.SpaSpacieErrorCancelled {
-        return .cancelled
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInsufficientDiskSpace {
-        let required = e.required >= 0 ? UInt64(e.required) : 0
-        let available = e.available >= 0 ? UInt64(e.available) : 0
-        return .insufficientDiskSpace(required: required, available: available)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInvalidUDID {
-        return .invalidUDID(udid: e.udid)
-    }
-
-    if let e = kotlinException as? SpaSpacieError.SpaSpacieErrorInvalidBundleID {
-        return .invalidBundleID(bundleID: e.bundleID)
-    }
-
-    // Scan/Duplicate errors — not expected from DeviceService, but map gracefully.
-    if kotlinException is SpaSpacieError.SpaSpacieErrorScanFailed
-        || kotlinException is SpaSpacieError.SpaSpacieErrorScanCancelled
-        || kotlinException is SpaSpacieError.SpaSpacieErrorPathNotAccessible
-        || kotlinException is SpaSpacieError.SpaSpacieErrorDuplicateReadFailed
-        || kotlinException is SpaSpacieError.SpaSpacieErrorDuplicateCancelled {
-        return .processExitedWithError(
-            tool: "KMP",
-            exitCode: -1,
-            stderr: error.localizedDescription
-        )
-    }
-
-    // Generic fallback: surface the error's localised description.
-    return .processExitedWithError(
-        tool: "KMP",
-        exitCode: Int32(nsError.code),
-        stderr: error.localizedDescription
-    )
-}
