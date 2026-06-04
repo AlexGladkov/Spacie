@@ -24,6 +24,7 @@
 		3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */; };
 		7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */; };
 		7A1E0AB72601E0F100AB0005 /* InstallFromArchiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB82601E0F100AB0005 /* InstallFromArchiveViewModel.swift */; };
+		7A1E0AF3260500000003 /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = 7A1E0AF1260500000001 /* SnapshotTesting */; };
 		7A1E0AB92601E0F100AB0006 /* InstallFromArchiveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0ABA2601E0F100AB0006 /* InstallFromArchiveSheet.swift */; };
 		7A1E0AE0260400000001 /* iTransferState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AE1260400000001 /* iTransferState.swift */; };
 		7A1E0AC026020000A100 /* iTransferStepIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AC126020000B100 /* iTransferStepIndicator.swift */; };
@@ -66,6 +67,7 @@
 		A885E0ECE73C197ACA8312BC /* SpacieKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D74CE0020276507A39B599EA /* SpacieKit.xcframework */; };
 		AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */; };
 		7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */; };
+		7A1E0AF4260500000004 /* iTransferStepIndicatorSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */; };
 		AC8D799C10433E4857C368EB /* BuiltInCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED018428B36C3363279DE186 /* BuiltInCategories.swift */; };
 		B3215625D3C1B518EC408126 /* AppArchiveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47AED639990BE677F360211D /* AppArchiveServiceTests.swift */; };
 		B9EE04D4B57AC9D08D41BB9C /* VolumeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D0DBFD6F0C3865ADDEE0CF /* VolumeManager.swift */; };
@@ -192,6 +194,7 @@
 		F7FE78D58E198718FDC1BFEC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferViewModelTests.swift; sourceTree = "<group>"; };
 		7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapperTests.swift; sourceTree = "<group>"; };
+		7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferStepIndicatorSnapshotTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -200,6 +203,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A885E0ECE73C197ACA8312BC /* SpacieKit.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7A1E0AF2260500000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7A1E0AF3260500000003 /* SnapshotTesting in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -299,6 +310,7 @@
 				47AED639990BE677F360211D /* AppArchiveServiceTests.swift */,
 				BD784BF84D5CFCBFF474B86F /* InputValidatorTests.swift */,
 				FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */,
+				7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */,
 			);
 			path = iTransferTests;
 			sourceTree = "<group>";
@@ -639,6 +651,7 @@
 			buildConfigurationList = 6A41872B815821975312D84E /* Build configuration list for PBXNativeTarget "SpacieTests" */;
 			buildPhases = (
 				89D7BC8E9CF9118B093B5F1C /* Sources */,
+				7A1E0AF2260500000002 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -647,6 +660,7 @@
 			);
 			name = SpacieTests;
 			packageProductDependencies = (
+				7A1E0AF1260500000001 /* SnapshotTesting */,
 			);
 			productName = SpacieTests;
 			productReference = ABE3C44446761FF96AB0D65B /* SpacieTests.xctest */;
@@ -686,8 +700,30 @@
 				3B5C0F60E8608FE63331BCC4 /* Spacie */,
 				9FC23282549E3E6C8F3CF585 /* SpacieTests */,
 			);
+			packageReferences = (
+				7A1E0AF0260500000001 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
+			);
 		};
 /* End PBXProject section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		7A1E0AF0260500000001 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.17.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7A1E0AF1260500000001 /* SnapshotTesting */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7A1E0AF0260500000001 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
+			productName = SnapshotTesting;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		0ABECDAF88DB4C449AF17E73 /* Build KMP SpacieKit */ = {
@@ -806,6 +842,7 @@
 				C681EE7E36B8DFA3D65E8027 /* ScannerSizeInvariantTests.swift in Sources */,
 				AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */,
 				7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */,
+				7A1E0AF4260500000004 /* iTransferStepIndicatorSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

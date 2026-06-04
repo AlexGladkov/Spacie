@@ -13,8 +13,19 @@ import UniformTypeIdentifiers
 /// to from the result step of the transfer wizard.
 struct AppArchiveView: View {
 
-    @State private var viewModel = AppArchiveViewModel()
+    @State private var viewModel: AppArchiveViewModel
     @State private var showDeleteConfirmation = false
+
+    init() {
+        _viewModel = State(initialValue: AppArchiveViewModel())
+    }
+
+    #if DEBUG
+    /// Preview/test initializer that accepts a pre-built VM.
+    init(viewModel: AppArchiveViewModel) {
+        _viewModel = State(initialValue: viewModel)
+    }
+    #endif
 
     private static let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -239,3 +250,25 @@ struct AppArchiveView: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#if DEBUG
+#Preview("AppArchive — populated") {
+    let mockService = MockAppArchiveService()
+    mockService.archivedAppsToReturn = [
+        ArchivedApp.previewSample,
+    ]
+    let vm = AppArchiveViewModel(service: mockService)
+    return AppArchiveView(viewModel: vm)
+        .task { await vm.load() }
+        .frame(width: 720, height: 460)
+}
+
+#Preview("AppArchive — empty") {
+    let vm = AppArchiveViewModel(service: MockAppArchiveService())
+    return AppArchiveView(viewModel: vm)
+        .task { await vm.load() }
+        .frame(width: 720, height: 460)
+}
+#endif

@@ -151,3 +151,33 @@ struct InstallFromArchiveSheet: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#if DEBUG
+#Preview("Install — waiting for device") {
+    let sample = ArchivedApp.previewSample
+    let vm = InstallFromArchiveViewModel(
+        app: sample,
+        service: MockiMobileDeviceService()
+    )
+    return InstallFromArchiveSheet(viewModel: vm)
+        .frame(width: 440, height: 320)
+}
+
+#Preview("Install — done") {
+    let sample = ArchivedApp.previewSample
+    let mock = MockiMobileDeviceService.withSampleData()
+    let vm = InstallFromArchiveViewModel(app: sample, service: mock)
+    return InstallFromArchiveSheet(viewModel: vm)
+        .frame(width: 440, height: 320)
+        .onAppear {
+            // Simulate the completed state for the preview.
+            Task { @MainActor in
+                // No way to set private state from outside — accept this as
+                // an empty-device preview. A snapshot test can drive deeper
+                // states via the protocol.
+            }
+        }
+}
+#endif
