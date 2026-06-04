@@ -145,7 +145,8 @@ final class iTransferViewModel {
         do {
             try await service.installDependencies { [weak self] line in
                 Task { @MainActor [weak self] in
-                    self?.installOutput.append(line)
+                    guard let self else { return }
+                    self.installOutput.append(line)
                 }
             }
             let status = await service.checkDependencies()
@@ -223,17 +224,20 @@ final class iTransferViewModel {
     func startSourceDeviceObservation() {
         stopDeviceObservation()
         isWaitingForSource = true
-        deviceObservationTask = Task {
-            for await event in service.observeDevices(pollingInterval: 2.0) {
-                handleDeviceEvent(event, role: .source)
-                if sourceDevice != nil, sourceTrustState == .trusted {
+        deviceObservationTask = Task { [weak self] in
+            guard let self else { return }
+            for await event in self.service.observeDevices(pollingInterval: 2.0) {
+                if Task.isCancelled { return }
+                self.handleDeviceEvent(event, role: .source)
+                if self.sourceDevice != nil, self.sourceTrustState == .trusted {
                     break
                 }
             }
-            isWaitingForSource = false
-            await loadSourceApps()
-            if !availableApps.isEmpty || lastError != nil {
-                step = .selectApps
+            if Task.isCancelled { return }
+            self.isWaitingForSource = false
+            await self.loadSourceApps()
+            if !self.availableApps.isEmpty || self.lastError != nil {
+                self.step = .selectApps
             }
         }
     }
@@ -310,10 +314,12 @@ final class iTransferViewModel {
     func startDestinationDeviceObservation() {
         stopDeviceObservation()
         isWaitingForDestination = true
-        deviceObservationTask = Task {
-            for await event in service.observeDevices(pollingInterval: 2.0) {
-                handleDeviceEvent(event, role: .destination)
-                if destinationDevice != nil, destinationTrustState == .trusted {
+        deviceObservationTask = Task { [weak self] in
+            guard let self else { return }
+            for await event in self.service.observeDevices(pollingInterval: 2.0) {
+                if Task.isCancelled { return }
+                self.handleDeviceEvent(event, role: .destination)
+                if self.destinationDevice != nil, self.destinationTrustState == .trusted {
                     break
                 }
             }
@@ -333,24 +339,28 @@ final class iTransferViewModel {
         transferProgress = nil
         lastError = nil
 
-        transferTask = Task {
-            let stream = service.transferApps(
+        transferTask = Task { [weak self] in
+            guard let self else { return }
+            let stream = self.service.transferApps(
                 sourceUDID: sourceUDID,
                 destinationUDID: destUDID,
                 apps: selectedApps,
                 archiveDir: dir,
-                shouldInstall: !archiveOnly
+                shouldInstall: !self.archiveOnly
             )
             do {
                 for try await progress in stream {
-                    transferProgress = progress
+                    if Task.isCancelled { return }
+                    self.transferProgress = progress
                 }
-                buildTransferResult(from: selectedApps)
+                self.buildTransferResult(from: selectedApps)
             } catch {
-                lastError = error.localizedDescription
-                buildTransferResult(from: selectedApps)
+                if Task.isCancelled { return }
+                self.lastError = error.localizedDescription
+                self.buildTransferResult(from: selectedApps)
             }
-            step = .result
+            if Task.isCancelled { return }
+            self.step = .result
         }
     }
 
@@ -408,21 +418,10 @@ final class iTransferViewModel {
             if role == .source, sourceDevice == nil {
                 sourceDevice = device
                 sourceTrustState = .notTrusted
-                Task {
-                    let state = await service.validateTrust(udid: device.udid)
-                    sourceTrustState = state
-                }
             } else if role == .destination, destinationDevice == nil,
-                      device.udid != sourceDevice?.udid {  // Never reuse the source phone as destination
+                      device.udid != sourceDevice?.udid {
                 destinationDevice = device
                 destinationTrustState = .notTrusted
-                Task {
-                    let state = await service.validateTrust(udid: device.udid)
-                    destinationTrustState = state
-                    if state == .trusted && step == .connectDestination {
-                        step = .transferring
-                    }
-                }
             }
 
         case .disconnected(let udid):
@@ -438,22 +437,25 @@ final class iTransferViewModel {
             if sourceDevice?.udid == udid {
                 sourceTrustState = state
                 if state == .trusted, step == .connectSource {
-                    Task {
-                        // Re-fetch device info now that trust is granted so the
-                        // device name/version replace the "Unknown" placeholders.
-                        if let updated = try? await service.listDevices().first(where: { $0.udid == udid }) {
-                            sourceDevice = updated
+                    Task { [weak self] in
+                        guard let self else { return }
+                        if let updated = try? await self.service.listDevices().first(where: { $0.udid == udid }) {
+                            if Task.isCancelled { return }
+                            self.sourceDevice = updated
                         }
                     }
                 }
             } else if destinationDevice?.udid == udid {
                 destinationTrustState = state
                 if state == .trusted, step == .connectDestination {
-                    Task {
-                        if let updated = try? await service.listDevices().first(where: { $0.udid == udid }) {
-                            destinationDevice = updated
+                    Task { [weak self] in
+                        guard let self else { return }
+                        if let updated = try? await self.service.listDevices().first(where: { $0.udid == udid }) {
+                            if Task.isCancelled { return }
+                            self.destinationDevice = updated
                         }
-                        step = .transferring
+                        if Task.isCancelled { return }
+                        self.step = .transferring
                     }
                 }
             }

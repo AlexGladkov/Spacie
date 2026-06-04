@@ -212,6 +212,23 @@ class DeviceServiceImpl : DeviceServiceApi {
         return result.exitCode == 0
     }
 
+    /**
+     * SECURITY NOTE (Sprint 1, 2026-06-04):
+     * `ipatool auth login` requires `-p PASSWORD` as a CLI argument (see `ipatool auth login --help`).
+     * This means the Apple ID password is briefly visible in the process argument list
+     * (~1-2 seconds, until ipatool exits). After successful login, ipatool persists a token
+     * in the macOS keychain, so subsequent commands do NOT pass the password.
+     *
+     * Mitigations applied:
+     *  - Password redacted from any error output via [redactSecret].
+     *  - Password never logged.
+     *  - Process is forcibly terminated after timeout / cancellation (see ProcessRunner).
+     *
+     * Full remediation (Sprint 5+ or later) requires one of:
+     *  - Forking ipatool to accept password via stdin / env var.
+     *  - Replacing ipatool with a direct App Store API client.
+     *  - Using a macOS XPC helper that handles credentials in-process.
+     */
     override suspend fun loginAppleID(email: String, password: String, authCode: String?) {
         val paths = requireToolPaths()
         val ipatool = paths["ipatool"]
@@ -230,7 +247,7 @@ class DeviceServiceImpl : DeviceServiceApi {
 
         if (result.exitCode != 0) {
             val raw = (result.stdout.decodeToString() + "\n" + result.stderr.decodeToString()).trim()
-            val cleaned = stripANSI(raw).trim()
+            val cleaned = redactSecret(stripANSI(raw).trim(), password)
             val lowered = cleaned.lowercase()
 
             val twoFAKeywords = listOf(
@@ -246,6 +263,11 @@ class DeviceServiceImpl : DeviceServiceApi {
                 if (cleaned.isEmpty()) "Authentication failed" else cleaned
             )
         }
+    }
+
+    private fun redactSecret(text: String, secret: String): String {
+        if (secret.isEmpty()) return text
+        return text.replace(secret, "***")
     }
 
     // -- IPA Extraction --

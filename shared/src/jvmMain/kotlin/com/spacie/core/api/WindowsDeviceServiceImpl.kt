@@ -169,6 +169,21 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         }
     }
 
+    /**
+     * SECURITY NOTE (Sprint 1, 2026-06-04):
+     * `ipatool auth login` requires `-p PASSWORD` as a CLI argument.
+     * On Windows the full command line is visible via WMI `Win32_Process`, Task Manager,
+     * and Windows Event Log (Event ID 4688 if process auditing is enabled).
+     * This is a known limitation of ipatool — see [DeviceServiceImpl] macOS counterpart
+     * for full remediation plan.
+     *
+     * Mitigations applied:
+     *  - Password redacted from any error output via [redactSecret].
+     *  - Password never logged.
+     *  - Child process forcibly terminated on cancellation/timeout (ProcessRunner).
+     *  - Process auditing increases risk; deployment should advise users to disable
+     *    Event ID 4688 logging if processing sensitive credentials.
+     */
     override suspend fun loginAppleID(email: String, password: String, authCode: String?) {
         val paths = requireToolPaths()
         val ipatool = paths["ipatool"]
@@ -183,15 +198,21 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         if (result.exitCode != 0) {
             val raw = (String(result.stdout, Charsets.UTF_8) + "\n" +
                     String(result.stderr, Charsets.UTF_8)).trim()
+            val cleaned = redactSecret(raw, password)
             val twoFaKeywords = listOf(
                 "two-factor", "2fa", "auth-code",
                 "authentication code", "verification code"
             )
-            if (authCode == null && twoFaKeywords.any { raw.lowercase().contains(it) }) {
+            if (authCode == null && twoFaKeywords.any { cleaned.lowercase().contains(it) }) {
                 throw SpacieError.TwoFactorRequired
             }
-            throw SpacieError.AuthFailed(raw.ifEmpty { "Authentication failed" })
+            throw SpacieError.AuthFailed(cleaned.ifEmpty { "Authentication failed" })
         }
+    }
+
+    private fun redactSecret(text: String, secret: String): String {
+        if (secret.isEmpty()) return text
+        return text.replace(secret, "***")
     }
 
     // -- IPA Extraction --

@@ -96,6 +96,10 @@ struct iTransferView: View {
         .task {
             await viewModel.checkDependencies()
         }
+        .onDisappear {
+            viewModel.stopDeviceObservation()
+            viewModel.cancelTransfer()
+        }
     }
 }
 

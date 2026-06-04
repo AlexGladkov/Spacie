@@ -39,7 +39,9 @@ actual class ProcessRunner actual constructor() {
     actual suspend fun run(
         executablePath: String,
         arguments: List<String>,
-        timeoutSeconds: Double?
+        timeoutSeconds: Double?,
+        stdin: ByteArray?,
+        env: Map<String, String>?
     ): ProcessResult {
         validateExecutable(executablePath)
 
@@ -48,12 +50,20 @@ actual class ProcessRunner actual constructor() {
 
             val stdoutPipe = NSPipe()
             val stderrPipe = NSPipe()
+            val stdinPipe = if (stdin != null) NSPipe() else null
 
             val task = NSTask()
             task.setExecutableURL(NSURL.fileURLWithPath(executablePath))
             task.setArguments(arguments)
             task.setStandardOutput(stdoutPipe)
             task.setStandardError(stderrPipe)
+            stdinPipe?.let { task.setStandardInput(it) }
+            if (env != null) {
+                val current = NSProcessInfo.processInfo.environment as Map<Any?, *>
+                val merged = HashMap<Any?, Any?>(current)
+                for ((k, v) in env) merged[k] = v
+                task.setEnvironment(merged)
+            }
 
             // Cancellation support
             cont.invokeOnCancellation {
@@ -105,6 +115,9 @@ actual class ProcessRunner actual constructor() {
 
             try {
                 task.launch()
+                stdinPipe?.let { pipe ->
+                    writeStdin(pipe, stdin!!)
+                }
             } catch (e: Exception) {
                 if (resumed.compareAndSet(0, 1)) {
                     cont.resumeWithException(ProcessError.LaunchFailed(e))
@@ -117,6 +130,8 @@ actual class ProcessRunner actual constructor() {
         executablePath: String,
         arguments: List<String>,
         timeoutSeconds: Double?,
+        stdin: ByteArray?,
+        env: Map<String, String>?,
         onLine: (String) -> Unit
     ): ProcessResult {
         validateExecutable(executablePath)
@@ -128,12 +143,20 @@ actual class ProcessRunner actual constructor() {
 
             val stdoutPipe = NSPipe()
             val stderrPipe = NSPipe()
+            val stdinPipe = if (stdin != null) NSPipe() else null
 
             val task = NSTask()
             task.setExecutableURL(NSURL.fileURLWithPath(executablePath))
             task.setArguments(arguments)
             task.setStandardOutput(stdoutPipe)
             task.setStandardError(stderrPipe)
+            stdinPipe?.let { task.setStandardInput(it) }
+            if (env != null) {
+                val current = NSProcessInfo.processInfo.environment as Map<Any?, *>
+                val merged = HashMap<Any?, Any?>(current)
+                for ((k, v) in env) merged[k] = v
+                task.setEnvironment(merged)
+            }
 
             cont.invokeOnCancellation {
                 if (task.isRunning()) {
@@ -225,6 +248,9 @@ actual class ProcessRunner actual constructor() {
 
             try {
                 task.launch()
+                stdinPipe?.let { pipe ->
+                    writeStdin(pipe, stdin!!)
+                }
             } catch (e: Exception) {
                 stdoutHandle.readabilityHandler = null
                 if (resumed.compareAndSet(0, 1)) {
@@ -237,6 +263,18 @@ actual class ProcessRunner actual constructor() {
     private fun validateExecutable(path: String) {
         if (!NSFileManager.defaultManager.isExecutableFileAtPath(path)) {
             throw ProcessError.ExecutableNotFound(path)
+        }
+    }
+
+    private fun writeStdin(pipe: NSPipe, bytes: ByteArray) {
+        val handle = pipe.fileHandleForWriting
+        try {
+            val data = bytes.usePinned { pinned ->
+                NSData.dataWithBytes(pinned.addressOf(0), bytes.size.toULong())
+            }
+            handle.writeData(data)
+        } finally {
+            handle.closeFile()
         }
     }
 

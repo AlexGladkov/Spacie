@@ -74,13 +74,17 @@ expect class ProcessRunner() {
      * @param executablePath absolute path to the executable
      * @param arguments command-line arguments
      * @param timeoutSeconds optional timeout; null = no timeout
+     * @param stdin optional bytes to pipe to the process's stdin
+     * @param env optional extra environment variables to inject
      * @return [ProcessResult] with stdout, stderr, and exit code
      * @throws ProcessError on failure
      */
     suspend fun run(
         executablePath: String,
         arguments: List<String>,
-        timeoutSeconds: Double?
+        timeoutSeconds: Double?,
+        stdin: ByteArray? = null,
+        env: Map<String, String>? = null
     ): ProcessResult
 
     /**
@@ -89,6 +93,8 @@ expect class ProcessRunner() {
      * @param executablePath absolute path to the executable
      * @param arguments command-line arguments
      * @param timeoutSeconds optional timeout; null = no timeout
+     * @param stdin optional bytes to pipe to the process's stdin
+     * @param env optional extra environment variables to inject
      * @param onLine callback invoked for each line of stdout
      * @return [ProcessResult] with full stdout, stderr, and exit code
      * @throws ProcessError on failure
@@ -97,6 +103,8 @@ expect class ProcessRunner() {
         executablePath: String,
         arguments: List<String>,
         timeoutSeconds: Double?,
+        stdin: ByteArray? = null,
+        env: Map<String, String>? = null,
         onLine: (String) -> Unit
     ): ProcessResult
 }
