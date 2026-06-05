@@ -233,6 +233,12 @@ final class AppViewModel {
 
         cancelScan()
 
+        // Show a "preparing" placeholder immediately so the user sees the
+        // disk-click → results transition. Without this, scanState stayed
+        // .idle for the duration of attemptCacheLoad (5-10s on big disks)
+        // and the UI looked frozen on the volume picker.
+        scanState = .preparing("Loading scan data…")
+
         // Prevent App Nap from throttling the scan when the window is not visible.
         scanActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled],
@@ -530,6 +536,11 @@ final class AppViewModel {
     /// produced a UI hang — both old and new scans competed for the main
     /// actor and corrupted each other's tree state.
     func rescan() async {
+        // Show transitional placeholder while we drain the previous run.
+        // cancelAndWait + orchestrator.cancelAndWait can take 1-3 seconds
+        // on big trees; without this the UI looked frozen.
+        scanState = .preparing("Preparing rescan…")
+
         // 1. Cancel and wait for everything in flight to actually exit.
         // Capture the handle BEFORE cancelScan() — cancelScan() nils
         // `scanTask`, so reading it afterwards would always be nil and the

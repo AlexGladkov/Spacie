@@ -304,6 +304,7 @@ private struct FileTypePanel: View {
     var previewIndex: UInt32? = nil
 
     @State private var distribution: [TypeEntry] = []
+    @State private var isComputingDistribution: Bool = false
     @State private var showCoveragePopover = false
 
     var body: some View {
@@ -311,6 +312,8 @@ private struct FileTypePanel: View {
             VStack(spacing: 0) {
                 if useEntryCount {
                     yellowPhasePlaceholder
+                } else if isComputingDistribution {
+                    loadingPlaceholder
                 } else if distribution.isEmpty {
                     emptyPlaceholder
                 } else {
@@ -334,8 +337,11 @@ private struct FileTypePanel: View {
         .task(id: distributionTaskKey) {
             if useEntryCount {
                 distribution = []
+                isComputingDistribution = false
                 return
             }
+            isComputingDistribution = true
+            defer { isComputingDistribution = false }
             // Offload to a background task — buildDistribution walks every node
             // in the subtree (potentially millions), which freezes the main thread
             // when run inline in a MainActor-isolated `.task`.
@@ -494,10 +500,10 @@ private struct FileTypePanel: View {
     private var yellowPhasePlaceholder: some View {
         VStack(spacing: 12) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(Color.yellow)
-                    .frame(width: 8, height: 8)
-                Text("Approximate Data")
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                Text("Deep scan in progress")
                     .font(.headline)
             }
             Text("File type distribution will appear when deep scan completes.")
@@ -515,6 +521,26 @@ private struct FileTypePanel: View {
             systemImage: "chart.pie",
             description: Text("No files found in this directory")
         )
+    }
+
+    /// Shown while the detached `buildDistribution` walk is in flight.
+    /// Walks up to millions of nodes; previously this slot rendered the
+    /// "No file data" empty state and looked like a failed scan.
+    private var loadingPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+            Text("Computing file types…")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Walking the subtree to bucket files by type.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
     }
 
     // MARK: - Distribution Computation

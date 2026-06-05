@@ -135,6 +135,12 @@ struct InfoBarView: View {
         case .scanning(let progress):
             scanningContent(progress: progress)
 
+        case .preparing(let message):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+
         case .completed(let stats):
             completedContent(stats: stats)
 

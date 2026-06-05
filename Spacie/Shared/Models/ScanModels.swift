@@ -19,6 +19,11 @@ enum ScanPhase: Sendable, Equatable {
 
 enum ScanState: Sendable, Equatable {
     case idle
+    /// Pre-scan preparation: loading cache, replaying WAL, draining a
+    /// previous scan via `cancelAndWait`. Shown to the user as an
+    /// indeterminate spinner so the disk-click → results gap no longer
+    /// looks like the UI is frozen.
+    case preparing(String)
     case scanning(ScanProgress)
     case completed(ScanStats)
     case cancelled
@@ -31,6 +36,11 @@ enum ScanState: Sendable, Equatable {
 
     var isCompleted: Bool {
         if case .completed = self { return true }
+        return false
+    }
+
+    var isPreparing: Bool {
+        if case .preparing = self { return true }
         return false
     }
 }

@@ -334,43 +334,51 @@ final class ScanOrchestrator {
         configuration: ScanConfiguration
     ) async -> (FileTree, ScanStats)? {
         let tree = FileTree()
+
+        // Batch tree inserts off MainActor — runPhase1 inherits @MainActor,
+        // so per-event tree.insert previously froze the UI for the full
+        // Phase 1 duration (10s+ on big disks). Buffer nodes and flush in
+        // detached chunks; the for-await stays on main for callback hops.
         let scanner = ShallowScanner()
         let stream = scanner.scan(configuration: configuration)
-
         var phase1Stats: ScanStats?
+        let insertBatchSize = 1024
+        var pending: [RawFileNode] = []
+        pending.reserveCapacity(insertBatchSize)
 
         for await event in stream {
             if Task.isCancelled { return nil }
-
             switch event {
             case .fileFound(let node):
-                tree.insert(node)
-
+                pending.append(node)
+                if pending.count >= insertBatchSize {
+                    let toInsert = pending
+                    pending.removeAll(keepingCapacity: true)
+                    await Task.detached(priority: .userInitiated) {
+                        tree.insertBatch(toInsert)
+                    }.value
+                }
             case .progress(let progress):
-                await MainActor.run {
-                    self.onProgress?(progress)
-                }
-
+                self.onProgress?(progress)
             case .restricted:
-                await MainActor.run {
-                    self.onRestricted?()
-                }
-
+                self.onRestricted?()
             case .completed(let stats):
                 phase1Stats = stats
-
             case .error, .directoryEntered, .directoryCompleted, .directorySkipped:
                 break
             }
         }
+        if Task.isCancelled { return nil }
+        // Flush final batch + aggregate + finalize off main.
+        let tail = pending
+        pending.removeAll(keepingCapacity: true)
+        await Task.detached(priority: .userInitiated) {
+            if !tail.isEmpty { tree.insertBatch(tail) }
+            tree.aggregateEntryCounts()
+            tree.finalizeBuild()
+        }.value
 
         if Task.isCancelled { return nil }
-
-        // Aggregate entry counts so parent dirs reflect total subtree weight.
-        // (No aggregateSizes needed -- all byte sizes are 0 in Phase 1.)
-        tree.aggregateEntryCounts()
-        tree.finalizeBuild()
-
         guard let stats = phase1Stats else { return nil }
         return (tree, stats)
     }

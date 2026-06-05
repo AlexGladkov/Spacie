@@ -107,6 +107,9 @@ struct ContentView: View {
         case .idle:
             startScreen
 
+        case .preparing(let message):
+            preparingScreen(message: message)
+
         case .scanning(let progress):
             if progress.phase == .red {
                 scanningScreen(progress: progress)
@@ -136,6 +139,25 @@ struct ContentView: View {
     }
 
     // MARK: - Scanning Screen
+
+    /// Indeterminate-spinner screen for the pre-scan transition
+    /// (cache load, WAL replay, draining a previous run).
+    private func preparingScreen(message: String) -> some View {
+        VStack(spacing: 16) {
+            Spacer()
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+            Text(message)
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("This may take a few seconds for large volumes.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
     /// Scanning progress screen shown during Phase 1 (Red) -- fast directory traversal.
     private func scanningScreen(progress: ScanProgress) -> some View {

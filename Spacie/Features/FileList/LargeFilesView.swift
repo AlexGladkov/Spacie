@@ -191,15 +191,29 @@ struct LargeFilesView: View {
 
     @State private var quickLookURL: URL?
     @State private var showQuickLook = false
+    @State private var trashTargetInfos: [FileNodeInfo] = []
+    @State private var showTrashConfirm: Bool = false
+    @State private var trashError: String?
+    @State private var showTrashError: Bool = false
     @Environment(\.openURL) private var openURL
+
+    /// Callback invoked when files are trashed — host (AppViewModel) uses
+    /// it to bump treeVersion and re-aggregate sizes.
+    var onFilesTrashed: (([UInt32]) -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if viewModel.filteredFiles.isEmpty {
-                emptyState
-            } else {
+            ContentStateView(
+                isLoading: viewModel.isRefreshing,
+                isEmpty: viewModel.filteredFiles.isEmpty,
+                loadingTitle: "Finding large files…",
+                loadingSubtitle: "Walking the tree to collect files above the threshold.",
+                emptyIcon: "tray",
+                emptyTitle: "No large files found",
+                emptyMessage: "Try adjusting the threshold or scanning a different volume."
+            ) {
                 fileTable
             }
             if !viewModel.selectionSummary.isEmpty {
@@ -212,6 +226,73 @@ struct LargeFilesView: View {
                 viewModel.refresh(tree: tree, sizeMode: sizeMode)
             }
         }
+        .alert(
+            trashConfirmTitle,
+            isPresented: $showTrashConfirm
+        ) {
+            Button("Cancel", role: .cancel) { trashTargetInfos = [] }
+            Button("Move to Trash", role: .destructive) {
+                performTrash(infos: trashTargetInfos)
+            }
+        } message: {
+            Text(trashConfirmMessage)
+        }
+        .alert("Error", isPresented: $showTrashError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let trashError {
+                Text(trashError)
+            }
+        }
+    }
+
+    private var trashConfirmTitle: String {
+        trashTargetInfos.count == 1
+            ? "Move \u{201C}\(trashTargetInfos.first?.name ?? "")\u{201D} to Trash?"
+            : "Move \(trashTargetInfos.count) files to Trash?"
+    }
+
+    private var trashConfirmMessage: String {
+        let total = trashTargetInfos.reduce(UInt64(0)) { $0 + $1.logicalSize }
+        return "Frees \(total.formattedSize). You can restore from Trash if needed."
+    }
+
+    private func performTrash(infos: [FileNodeInfo]) {
+        Task {
+            let manager = TrashManager()
+            var removed: [UInt32] = []
+            var firstError: String?
+            for info in infos {
+                let url = URL(fileURLWithPath: info.fullPath)
+                do {
+                    _ = try await manager.moveToTrash(url: url)
+                    removed.append(info.id)
+                } catch let trashErr as TrashError {
+                    // "File not found" means the file is already gone on
+                    // disk — drop the row from the list anyway since
+                    // keeping it visible misleads the user.
+                    if case .fileNotFound = trashErr {
+                        removed.append(info.id)
+                    } else if firstError == nil {
+                        firstError = trashErr.errorDescription ?? "Failed to move to Trash"
+                    }
+                } catch {
+                    if firstError == nil {
+                        firstError = error.localizedDescription
+                    }
+                }
+            }
+            if !removed.isEmpty {
+                viewModel.files.removeAll { removed.contains($0.id) }
+                viewModel.selectedFiles.subtract(removed)
+                onFilesTrashed?(removed)
+            }
+            if let firstError {
+                trashError = firstError
+                showTrashError = true
+            }
+        }
+        trashTargetInfos = []
     }
 
     // MARK: Toolbar
@@ -364,6 +445,14 @@ struct LargeFilesView: View {
 
         Divider()
 
+        Button("Move to Trash", role: .destructive) {
+            trashTargetInfos = selectedInfos
+            showTrashConfirm = true
+        }
+        .keyboardShortcut(.delete, modifiers: .command)
+
+        Divider()
+
         if let dropZone = dropZoneViewModel {
             Button("Add to Drop Zone") {
                 for info in selectedInfos {
@@ -449,4 +538,84 @@ struct LargeFilesView: View {
 #Preview("Large Files") {
     LargeFilesView(viewModel: LargeFilesViewModel())
         .frame(width: 800, height: 500)
+}
+
+// MARK: - ContentStateView (shared 3-state container)
+
+/// Three-state container used across feature views to enforce
+/// `loading | empty | content` rendering. Placed here (rather than its own
+/// file) because the Xcode project does not auto-discover new files in
+/// `Shared/`. Used by `LargeFilesView`, `OldFilesView`, `StorageBrowserView`.
+struct ContentStateView<Content: View>: View {
+
+    let isLoading: Bool
+    let isEmpty: Bool
+    let loadingTitle: String
+    let loadingSubtitle: String?
+    let emptyIcon: String
+    let emptyTitle: String
+    let emptyMessage: String?
+    @ViewBuilder let content: () -> Content
+
+    init(
+        isLoading: Bool,
+        isEmpty: Bool,
+        loadingTitle: String = "Loading…",
+        loadingSubtitle: String? = nil,
+        emptyIcon: String = "tray",
+        emptyTitle: String = "No items",
+        emptyMessage: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.isLoading = isLoading
+        self.isEmpty = isEmpty
+        self.loadingTitle = loadingTitle
+        self.loadingSubtitle = loadingSubtitle
+        self.emptyIcon = emptyIcon
+        self.emptyTitle = emptyTitle
+        self.emptyMessage = emptyMessage
+        self.content = content
+    }
+
+    var body: some View {
+        if isLoading {
+            VStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.large)
+                Text(loadingTitle)
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                if let subtitle = loadingSubtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        } else if isEmpty {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: emptyIcon,
+                description: emptyMessage.map(Text.init)
+            )
+        } else {
+            content()
+        }
+    }
+}
+
+struct InlineLoadingBar: View {
+    let title: String
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().progressViewStyle(.circular).controlSize(.small)
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(Color.secondary.opacity(0.1)))
+    }
 }
