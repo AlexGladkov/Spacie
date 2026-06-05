@@ -166,8 +166,12 @@ final class AppViewModel {
 
     // MARK: - Private
 
-    private let orchestrator = ScanOrchestrator()
+    private let orchestrator: any ScanOrchestratorProtocol
     private var scanTask: Task<Void, Never>?
+    /// Tracked so successive Move-to-Trash invocations cancel the previous
+    /// aggregate pass instead of stacking up overlapping detached tasks that
+    /// would race each other's treeVersion bump.
+    private var trashAggregateTask: Task<Void, Never>?
 
     /// Persistent scan cache instance for the current volume.
     /// Created lazily when a scan starts or cache is loaded.
@@ -180,23 +184,30 @@ final class AppViewModel {
     /// every progress-update re-render performed `createDirectory` + `stat`).
     private(set) var cacheExistsForVolume: Bool = false
 
-    /// Background task for cache validation and auto-dismiss.
-    private var cacheValidationTask: Task<Void, Never>?
+    /// Cache lifecycle coordinator (load, WAL replay, save, dismiss banners).
+    /// Extracted from this view model to keep the scan-orchestration code below
+    /// focused; mutations to UI state happen via the [CacheCoordinatorContext]
+    /// protocol implemented in an extension on this class.
+    @ObservationIgnored
+    private var cacheCoordinator: CacheCoordinator!
 
     /// Prevents App Nap from throttling the scan while in background.
     private var scanActivity: NSObjectProtocol?
 
     // MARK: - Initialization
 
-    init() {
+    init(orchestrator: any ScanOrchestratorProtocol = ScanOrchestrator()) {
         let savedSize = UserDefaults.standard.string(forKey: "defaultSizeMode") ?? SizeMode.logical.rawValue
         self.sizeMode = SizeMode(rawValue: savedSize) ?? .logical
+        self.orchestrator = orchestrator
 
         // Register defaults for Smart Scan settings.
         UserDefaults.standard.register(defaults: [
             "smartScanEnabled": true,
             "smartScanCoverageThreshold": 0.95,
         ])
+
+        self.cacheCoordinator = CacheCoordinator(orchestrator: orchestrator, context: self)
     }
 
     // MARK: - Scan
@@ -245,269 +256,21 @@ final class AppViewModel {
         self.cacheExistsForVolume = cache.cacheExists
 
         if cache.cacheExists {
-            let loaded = await attemptCacheLoad(cache: cache, configuration: configuration)
+            let loaded = await cacheCoordinator.attemptCacheLoad(cache: cache, configuration: configuration)
             if loaded {
                 endScanActivity()
                 return
             }
         }
 
-        // No cache or cache load failed: run full scan
-        cacheStatus = .none
+        // No cache or cache load failed: run full scan.
+        // Preserve `.corrupted` so the user actually sees the explanatory
+        // banner — overwriting it with `.none` instantly hid the notice
+        // and made cache corruption silently look like a normal cold scan.
+        if cacheStatus != .corrupted {
+            cacheStatus = .none
+        }
         await startFullScan(volume: volume, configuration: configuration)
-    }
-
-    /// Attempts to load the scan from cache and handle crash recovery.
-    ///
-    /// Returns `true` if the cache was successfully loaded and the incremental
-    /// path is being used. Returns `false` if a full scan should be performed instead.
-    ///
-    /// ## Crash Recovery (Step 11)
-    /// - `scanComplete == true`: Normal incremental validation path.
-    /// - `scanComplete == false, lastPhase == 1`: Phase 1 was interrupted.
-    ///   Restart Phase 1 from scratch (fast, 5-15 sec).
-    /// - `scanComplete == false, lastPhase == 2`: Phase 2 was interrupted.
-    ///   Show the cached tree and resume scanning remaining directories.
-    private func attemptCacheLoad(
-        cache: ScanCache,
-        configuration: ScanConfiguration
-    ) async -> Bool {
-        // Verify the volume is still mounted / accessible before attempting
-        // to load and validate the cache. Without this check, CacheValidator
-        // would lstat() every cached directory, all would fail, and we'd
-        // trigger a massive rescan destined to fail.
-        let rootPath = configuration.rootPath.path(percentEncoded: false)
-        guard FileManager.default.isReadableFile(atPath: rootPath) else {
-            cacheStatus = .volumeNotMounted
-            return true // Return true to prevent falling through to full scan
-        }
-
-        // Deserialize the cache blob on a background thread to avoid blocking
-        // the main thread for large caches (5M nodes at ~72B = ~360 MB).
-        let loadTask = Task.detached(priority: .userInitiated) { cache.load() }
-        guard let cachedTree = await loadTask.value else {
-            // Cache exists but is corrupted or unreadable
-            cacheStatus = .corrupted
-            cache.invalidate()
-            // Auto-dismiss corrupted banner after 3 seconds
-            scheduleCacheStatusDismiss(after: 3.0)
-            return false
-        }
-
-        // --- Crash Recovery Logic (Step 11) ---
-
-        if !cache.scanComplete {
-            return await handleIncompleteCache(
-                cache: cache,
-                cachedTree: cachedTree,
-                configuration: configuration
-            )
-        }
-
-        // --- Normal Incremental Path (Step 9) ---
-
-        // Apply any WAL entries on top of the base blob
-        cachedTree.prepareForPatching()
-        applyWALEntries(cache: cache, tree: cachedTree)
-
-        // Display the cached tree immediately
-        self.tree = cachedTree
-        self.treeVersion += 1
-        self.scanPhase = .green
-        self.scanState = .completed(ScanStats(
-            totalFiles: UInt64(cachedTree.nodeCount),
-            totalDirectories: 0,
-            totalLogicalSize: cachedTree.logicalSize(of: cachedTree.rootIndex),
-            totalPhysicalSize: cachedTree.physicalSize(of: cachedTree.rootIndex),
-            restrictedDirectories: 0,
-            skippedDirectories: 0,
-            scanDuration: 0,
-            volumeId: configuration.volumeId
-        ))
-
-        let vs = VisualizationState(
-            rootIndex: cachedTree.rootIndex,
-            sizeMode: sizeMode
-        )
-        self.vizState = vs
-        self.lastScanDate = cache.lastScanDate
-        self.dataIsStale = false
-        self.cacheStatus = .loadedChecking(lastScanDate: cache.lastScanDate ?? Date())
-
-        // Start background validation
-        cacheValidationTask?.cancel()
-        cacheValidationTask = Task { [weak self] in
-            guard let self else { return }
-
-            let validator = CacheValidator()
-            let rootPath = configuration.rootPath.path(percentEncoded: false)
-
-            let result = await validator.validate(
-                tree: cachedTree,
-                rootPath: rootPath
-            )
-
-            if Task.isCancelled { return }
-
-            if result.dirtyDirectories.isEmpty {
-                self.cacheStatus = .upToDate
-                self.scheduleCacheStatusDismiss(after: 3.0)
-            } else {
-                // Incremental rescan of only dirty directories
-                let rescanResult = await self.orchestrator.startIncrementalRescan(
-                    cachedTree: cachedTree,
-                    dirtyPaths: result.dirtyDirectories,
-                    configuration: configuration,
-                    cache: cache
-                )
-
-                if Task.isCancelled { return }
-
-                self.tree = cachedTree
-                self.treeVersion += 1
-                self.cacheStatus = .changesFound(
-                    addedBytes: rescanResult.bytesChanged,
-                    dirCount: rescanResult.directoriesRescanned
-                )
-
-                // Save updated tree to cache (Step 10: after incremental rescan)
-                let eventId = FSEventsMonitor.currentSystemEventId()
-                try? cache.save(
-                    tree: cachedTree,
-                    scanComplete: true,
-                    lastPhase: 2,
-                    lastEventId: eventId
-                )
-
-                // Check WAL compaction
-                if cache.shouldCompact() {
-                    Task.detached(priority: .utility) {
-                        try? cache.compactWAL(tree: cachedTree, lastEventId: eventId)
-                    }
-                }
-
-                self.scheduleCacheStatusDismiss(after: 5.0)
-            }
-
-            // Start FSEvents monitoring for future changes
-            cache.startMonitoring(path: configuration.rootPath.path(percentEncoded: false))
-        }
-
-        return true
-    }
-
-    /// Handles cache load when the previous scan was interrupted (crash recovery).
-    ///
-    /// - `lastPhase == 1`: Phase 1 was interrupted. Discard cache, restart from scratch.
-    /// - `lastPhase == 2`: Phase 2 was interrupted. Show cached Phase 1 tree and resume.
-    private func handleIncompleteCache(
-        cache: ScanCache,
-        cachedTree: FileTree,
-        configuration: ScanConfiguration
-    ) async -> Bool {
-        if cache.lastPhase <= 1 {
-            // Phase 1 was interrupted: restart from scratch (fast, 5-15 sec)
-            cache.invalidate()
-            return false
-        }
-
-        // Phase 2 was interrupted: show cached tree and resume scanning
-        cacheStatus = .resumingScan
-
-        cachedTree.prepareForPatching()
-        applyWALEntries(cache: cache, tree: cachedTree)
-
-        // Display the partial tree immediately
-        self.tree = cachedTree
-        self.scanPhase = .yellow
-        let vs = VisualizationState(
-            rootIndex: cachedTree.rootIndex,
-            sizeMode: sizeMode
-        )
-        vs.useEntryCount = false // Phase 1 data has no sizes, but Phase 2 partial does
-        self.vizState = vs
-        self.lastScanDate = cache.lastScanDate
-
-        // Determine what still needs scanning:
-        // Use FSEvents sinceWhen to detect changes during the crash window,
-        // then rescan unscanned dirs + any changed dirs.
-        let eventId = cache.lastEventId
-
-        cacheValidationTask?.cancel()
-        cacheValidationTask = Task { [weak self] in
-            guard let self else { return }
-
-            // Validate all directories to find what changed
-            let validator = CacheValidator()
-            let rootPath = configuration.rootPath.path(percentEncoded: false)
-            let result = await validator.validate(tree: cachedTree, rootPath: rootPath)
-
-            if Task.isCancelled { return }
-
-            // Rescan all dirty dirs (includes both unscanned and changed)
-            let dirtyPaths = result.dirtyDirectories
-            if !dirtyPaths.isEmpty {
-                let rescanResult = await self.orchestrator.startIncrementalRescan(
-                    cachedTree: cachedTree,
-                    dirtyPaths: dirtyPaths,
-                    configuration: configuration,
-                    cache: cache
-                )
-
-                if Task.isCancelled { return }
-                self.tree = cachedTree
-            }
-
-            // Mark as complete now
-            self.scanPhase = .green
-            self.cacheStatus = .none
-            self.lastScanDate = Date()
-
-            // Save the now-complete tree
-            let newEventId = FSEventsMonitor.currentSystemEventId()
-            try? cache.save(
-                tree: cachedTree,
-                scanComplete: true,
-                lastPhase: 2,
-                lastEventId: newEventId
-            )
-
-            cache.startMonitoring(path: rootPath)
-        }
-
-        return true
-    }
-
-    /// Applies WAL entries to a cached tree.
-    ///
-    /// Reads all valid WAL entries and patches them into the tree.
-    /// The tree must have ``FileTree/prepareForPatching()`` called beforehand.
-    private func applyWALEntries(cache: ScanCache, tree: FileTree) {
-        guard cache.wal.isValid(baseFormatVersion: ScanCache.currentFormatVersion) else {
-            cache.wal.deleteWAL()
-            return
-        }
-
-        guard let entries = try? cache.wal.readAll(), !entries.isEmpty else {
-            return
-        }
-
-        for entry in entries {
-            // WAL entries store dirPathHash but not the resolved path.
-            // We need to find the matching path by hash from the tree's pathIndex.
-            // Since applyWALPatch requires the dirPath string, we must find it.
-            // The tree's prepareForPatching rebuilt pathIndex, so we can search.
-            // For now, skip WAL application if we can't resolve the path.
-            // This is acceptable because the subsequent validation + incremental
-            // rescan will catch any stale directories anyway.
-            tree.applyWALPatch(
-                dirPath: entry.dirPath,
-                walNodes: entry.nodes,
-                walStringPoolData: entry.stringPoolData
-            )
-        }
-
-        tree.aggregateSizes()
     }
 
     /// Runs the standard two-phase full scan with cache writing at lifecycle points.
@@ -538,15 +301,21 @@ final class AppViewModel {
                     vs.useEntryCount = true
                     self.vizState = vs
 
-                    // Step 10: Save cache after Phase 1 completion
+                    // Step 10: Save cache after Phase 1 completion.
+                    // Offload to a detached task — `cache.save` writes a large
+                    // serialized tree to disk synchronously and previously
+                    // stalled the MainActor at the Phase1→Yellow handoff for
+                    // 5M-node volumes.
                     if let cache = self.scanCache {
                         let eventId = FSEventsMonitor.currentSystemEventId()
-                        try? cache.save(
-                            tree: tree,
-                            scanComplete: false,
-                            lastPhase: 1,
-                            lastEventId: eventId
-                        )
+                        Task.detached(priority: .utility) {
+                            try? cache.save(
+                                tree: tree,
+                                scanComplete: false,
+                                lastPhase: 1,
+                                lastEventId: eventId
+                            )
+                        }
                     }
                 }
             } else if phase == .smartGreen {
@@ -586,36 +355,77 @@ final class AppViewModel {
 
         scanTask = Task { [weak self] in
             guard let self else { return }
-            if let stats = await self.orchestrator.startScan(configuration: configuration) {
+            let stats = await self.orchestrator.startScan(configuration: configuration)
+            // Smart Scan exits with nil stats by design (results live in
+            // smartScanResult on the orchestrator). The previous flow only
+            // updated scanState when stats was non-nil, so a successful
+            // Smart Scan completion left scanState stuck on .scanning(...),
+            // and the UI never showed "complete".
+            if let stats {
                 self.scanState = .completed(stats)
                 self.scanStartDate = nil
                 self.lastScanDate = Date()
                 self.dataIsStale = false
                 self.scanPhase = .green
+                // Clear the "cache corrupted" banner after the recovery
+                // full-scan finishes — without this, the warning persisted
+                // for the entire visualisation session and confused users
+                // about the new scan's validity.
+                if self.cacheStatus == .corrupted {
+                    self.cacheStatus = .none
+                }
                 // Final tree swap to the fully accurate deep tree.
                 if let deepTree = self.orchestrator.deepTree {
                     self.tree = deepTree
                     self.treeVersion += 1
 
-                    // Step 10: Save cache after Phase 2 completion
+                    // Step 10: Save cache after Phase 2 completion. The
+                    // serialize-and-write is offloaded; FSEvents monitoring
+                    // (cheap to start) stays on main to avoid races with
+                    // teardown reading `cache.monitor`.
                     if let cache = self.scanCache {
                         let eventId = FSEventsMonitor.currentSystemEventId()
-                        try? cache.save(
-                            tree: deepTree,
-                            scanComplete: true,
-                            lastPhase: 2,
-                            lastEventId: eventId
-                        )
-                        // Delete WAL since we have a fresh complete blob
-                        cache.wal.deleteWAL()
-                        // Start FSEvents monitoring
-                        cache.startMonitoring(
-                            path: configuration.rootPath.path(percentEncoded: false)
-                        )
+                        let rootPath = configuration.rootPath.path(percentEncoded: false)
+                        Task.detached(priority: .utility) {
+                            try? cache.save(
+                                tree: deepTree,
+                                scanComplete: true,
+                                lastPhase: 2,
+                                lastEventId: eventId
+                            )
+                            cache.wal.deleteWAL()
+                        }
+                        cache.startMonitoring(path: rootPath)
                     }
                 }
             } else if Task.isCancelled {
                 self.scanState = .cancelled
+            } else if let smartResult = self.orchestrator.smartScanResult {
+                // Smart Scan reached its coverage threshold and the
+                // orchestrator already moved phase to .smartGreen. Synthesize
+                // a completed ScanStats from the partial-coverage data so
+                // the UI exits the .scanning state. Without this, scanState
+                // stayed stuck on `.scanning(...)` even though phase was
+                // already .smartGreen and onProgress had stopped firing.
+                self.scanState = .completed(ScanStats(
+                    totalFiles: 0,
+                    totalDirectories: 0,
+                    totalLogicalSize: smartResult.scannedBytes,
+                    totalPhysicalSize: smartResult.scannedBytes,
+                    restrictedDirectories: 0,
+                    skippedDirectories: UInt64(smartResult.unscannedDirectoryCount),
+                    scanDuration: 0,
+                    volumeId: configuration.volumeId
+                ))
+                self.scanStartDate = nil
+                self.lastScanDate = Date()
+                self.dataIsStale = false
+                // Mirror the full-scan path: clear the corrupted-cache
+                // banner once the smart scan completes; otherwise the
+                // warning persisted forever for users on Smart Scan mode.
+                if self.cacheStatus == .corrupted {
+                    self.cacheStatus = .none
+                }
             }
             self.endScanActivity()
         }
@@ -624,10 +434,17 @@ final class AppViewModel {
     /// Cancels the currently running scan, if any.
     func cancelScan() {
         orchestrator.cancel()
+        // Detach orchestrator callbacks so a late-firing event from the
+        // cancelled task cannot resurrect `scanState = .scanning(...)` over
+        // the freshly-cancelled UI state. Without this, the throttled
+        // onProgress closure could re-fire after we transition to .cancelled.
+        orchestrator.onPhaseChange = nil
+        orchestrator.onProgress = nil
+        orchestrator.onTreeUpdate = nil
+        orchestrator.onRestricted = nil
         scanTask?.cancel()
         scanTask = nil
-        cacheValidationTask?.cancel()
-        cacheValidationTask = nil
+        cacheCoordinator.cancel()
         endScanActivity()
         scanStartDate = nil
         if scanState.isScanning {
@@ -652,17 +469,43 @@ final class AppViewModel {
     func handleNodeTrashed(index: UInt32) {
         guard let tree else { return }
 
-        let deletedBytes = tree.removeNode(at: index)
-        tree.aggregateSizes()
-        treeVersion += 1
+        // Serialize repeated Move-to-Trash calls. Cancelling the previous
+        // task is not enough on its own — `Task.cancel()` is cooperative
+        // and the inner `Task.detached` may already be in the middle of
+        // `tree.removeNode`/`aggregateSizes`. Await the previous handle so
+        // a fresh trash never runs concurrently with a still-active
+        // FileTree mutation from the prior invocation.
+        let previous = trashAggregateTask
+        previous?.cancel()
+        trashAggregateTask = Task { [tree] in
+            _ = await previous?.value
+            // Check cancellation BEFORE the detached mutation runs.
+            // Otherwise a cancel issued during the await above still let
+            // us proceed to mutate the tree and only bailed afterwards.
+            if Task.isCancelled { return }
 
-        // Notify orchestrator (Smart Scan rescan trigger)
-        if let volume, deletedBytes > 0 {
-            orchestrator.handleDeletion(deletedBytes: deletedBytes, volume: volume.mountPoint)
+            let deletedBytes = await Task.detached(priority: .userInitiated) { () -> UInt64 in
+                let bytes = tree.removeNode(at: index)
+                tree.aggregateSizes()
+                return bytes
+            }.value
+
+            if Task.isCancelled { return }
+            treeVersion += 1
+
+            // Notify orchestrator (Smart Scan rescan trigger)
+            if let volume, deletedBytes > 0 {
+                orchestrator.handleDeletion(deletedBytes: deletedBytes, volume: volume.mountPoint)
+            }
+
+            // After a trash, the on-disk state has just changed but the
+            // in-memory tree was already mutated to match — therefore the
+            // tree is *not* stale relative to disk. But FSEvents may still
+            // surface additional unrelated changes; keep the stale flag
+            // monotonically truthful by leaving it alone here (was
+            // `dataIsStale = false`, which silently hid legitimate
+            // FSEvents-detected staleness from other sources).
         }
-
-        // Mark data as potentially stale for FSEvents-based future rescans
-        dataIsStale = false
     }
 
     /// Resets to idle state without starting a new scan.
@@ -688,9 +531,14 @@ final class AppViewModel {
     /// actor and corrupted each other's tree state.
     func rescan() async {
         // 1. Cancel and wait for everything in flight to actually exit.
+        // Capture the handle BEFORE cancelScan() — cancelScan() nils
+        // `scanTask`, so reading it afterwards would always be nil and the
+        // await would silently no-op, letting the previous scan's resume
+        // race with the new scan started below.
+        let runningTask = scanTask
         cancelScan()
-        if let task = scanTask { _ = await task.value }
-        if let task = cacheValidationTask { _ = await task.value }
+        if let task = runningTask { _ = await task.value }
+        await cacheCoordinator.cancelAndWait()
         await orchestrator.cancelAndWait()
 
         // 2. Now safe to clear references and start fresh.
@@ -713,35 +561,13 @@ final class AppViewModel {
     /// the cache reflects the most recent data and can detect changes that occurred
     /// between the save and the app's termination.
     func saveCurrentStateToCache() {
-        guard let cache = scanCache, let tree = tree else { return }
-
-        let eventId = FSEventsMonitor.currentSystemEventId()
-        let isComplete = scanPhase == .green || scanPhase == .smartGreen
-        let phase: UInt8 = scanPhase == .red ? 0 : (scanPhase == .yellow ? 1 : 2)
-
-        try? cache.save(
+        let saved = cacheCoordinator.saveCurrentStateToCache(
+            cache: scanCache,
             tree: tree,
-            scanComplete: isComplete,
-            lastPhase: phase,
-            lastEventId: eventId
+            scanPhase: scanPhase
         )
-        cacheExistsForVolume = true
-    }
-
-    /// Schedules auto-dismissal of the cache status banner after a delay.
-    ///
-    /// - Parameter seconds: Delay in seconds before setting ``cacheStatus`` to `.none`.
-    private func scheduleCacheStatusDismiss(after seconds: TimeInterval) {
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
-            guard let self else { return }
-            // Only dismiss if still showing a dismissable status
-            switch self.cacheStatus {
-            case .upToDate, .changesFound, .corrupted:
-                self.cacheStatus = .none
-            default:
-                break
-            }
+        if saved {
+            cacheExistsForVolume = true
         }
     }
 
@@ -754,3 +580,11 @@ final class AppViewModel {
         }
     }
 }
+
+// MARK: - CacheCoordinatorContext
+
+/// Exposes the subset of [AppViewModel] properties that ``CacheCoordinator``
+/// mutates during cache load / save / WAL replay flows. All required members
+/// are already declared on the view model — this conformance is just the
+/// protocol wiring and intentionally adds no new behaviour.
+extension AppViewModel: CacheCoordinatorContext {}

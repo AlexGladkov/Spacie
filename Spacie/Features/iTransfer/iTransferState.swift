@@ -108,3 +108,21 @@ struct iTransferWizardData: Sendable {
 
     var lastError: String?
 }
+
+// MARK: - Factories
+
+extension iTransferWizardData {
+    /// Default state for a freshly opened wizard. `archiveOnly` is `false` so
+    /// the user explicitly opts into archive-only mode on the action step.
+    static func initial() -> Self { Self() }
+
+    /// State for re-entering the wizard after a completed transfer. Sets
+    /// `archiveOnly = true` because the most common follow-up flow is to
+    /// archive additional apps. Keep this divergence from `initial()`
+    /// explicit so the difference doesn't drift.
+    static func afterReset() -> Self {
+        var data = Self()
+        data.archiveOnly = true
+        return data
+    }
+}

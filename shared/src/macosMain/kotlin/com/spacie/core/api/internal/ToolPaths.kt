@@ -31,7 +31,19 @@ internal open class ToolPaths(private val resolver: HomebrewResolver) {
     open fun require(tool: String): String =
         all()[tool] ?: throw SpacieError.DependencyMissing(listOf(tool))
 
-    /** Lookup one tool without throwing — null when absent. */
+    /**
+     * Lookup one tool without throwing on the documented `tool-missing` path
+     * (returns null). Other Throwables (OOM, native crashes, programmer
+     * errors) are intentionally NOT swallowed — re-thrown so the caller can
+     * crash visibly instead of mistaking a real fault for "tool not
+     * installed" and silently falling back.
+     */
     open fun optional(tool: String): String? =
-        runCatching { all()[tool] }.getOrNull()
+        try {
+            all()[tool]
+        } catch (e: SpacieError.DependencyMissing) {
+            null
+        } catch (e: SpacieError.PackageManagerNotInstalled) {
+            null
+        }
 }

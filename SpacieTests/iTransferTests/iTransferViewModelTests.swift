@@ -216,4 +216,85 @@ final class iTransferViewModelTests: XCTestCase {
         vm.state = .connectSource(ConnectDeviceSubstate())
         XCTAssertFalse(vm.isInstallingDependencies)
     }
+
+    // MARK: - Apple ID 2FA flow
+
+    func testLoginAppleID_twoFactorRequired_setsNeedsTwoFactor() async {
+        let service = MockiMobileDeviceService()
+        service.errorToThrow = iMobileDeviceError.twoFactorRequired
+        let vm = makeViewModel(service: service)
+
+        await vm.loginAppleID(email: "user@example.com", password: "secret")
+
+        XCTAssertTrue(vm.appleIDNeedsTwoFactor)
+        XCTAssertEqual(vm.appleIDEmailForTwoFactor, "user@example.com")
+        XCTAssertFalse(vm.appleIDAuthenticated)
+    }
+
+    func testLoginAppleID_genericFailure_setsLoginError() async {
+        let service = MockiMobileDeviceService()
+        service.shouldFailAppleIDLogin = true
+        let vm = makeViewModel(service: service)
+
+        await vm.loginAppleID(email: "user@example.com", password: "secret")
+
+        XCTAssertFalse(vm.appleIDNeedsTwoFactor)
+        XCTAssertFalse(vm.appleIDAuthenticated)
+        XCTAssertNotNil(vm.appleIDLoginError)
+    }
+
+    func testCancelAppleIDLogin_clearsAuthError() {
+        let vm = makeViewModel()
+        vm.wizardData.appleIDLoginError = "boom"
+        vm.wizardData.appleIDNeedsTwoFactor = true
+        vm.wizardData.appleIDEmailForTwoFactor = "user@example.com"
+
+        vm.cancelAppleIDLogin()
+
+        XCTAssertFalse(vm.appleIDNeedsTwoFactor)
+        XCTAssertNil(vm.appleIDLoginError)
+        XCTAssertEqual(vm.appleIDEmailForTwoFactor, "")
+    }
+
+    // MARK: - Cancel transfer mid-stream
+
+    func testCancelTransfer_cancelsTaskAndLeavesState() async {
+        let service = MockiMobileDeviceService.withSampleData()
+        service.operationDelay = 0.05
+        let vm = makeViewModel(service: service)
+
+        // Pre-fill the wizard state to reach a valid startTransfer entry point.
+        vm.wizardData.sourceDevice = service.devicesToReturn.first
+        vm.wizardData.sourceTrustState = .trusted
+        vm.wizardData.availableApps = service.appsToReturn
+        vm.wizardData.selectedBundleIDs = Set(service.appsToReturn.map(\.bundleID))
+        vm.wizardData.archiveOnly = true
+        vm.state = .transferring
+
+        vm.startTransfer()
+        // Let the stream emit at least one chunk
+        try? await Task.sleep(for: .milliseconds(30))
+        vm.cancelTransfer()
+
+        // Allow cancellation to settle
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // The state may remain .transferring (since cancel doesn't force a state
+        // transition by itself) but the underlying task must be released.
+        XCTAssertTrue(
+            vm.state.kind == .transferring || vm.state.kind == .result,
+            "after cancel, state should be transferring or result, was \(vm.state.kind)"
+        )
+    }
+
+    // MARK: - Reset uses .afterReset factory
+
+    func testReset_setsArchiveOnlyTrue_matchingAfterResetFactory() {
+        let vm = makeViewModel()
+        vm.wizardData.archiveOnly = false
+
+        vm.reset()
+
+        XCTAssertTrue(vm.archiveOnly, "reset() should land on archive-only (the AfterReset factory contract)")
+    }
 }

@@ -20,6 +20,8 @@
 		24D3EB4FD25C223B0BD2EAE1 /* BreadcrumbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF7940D4A57B0D14972BA97A /* BreadcrumbView.swift */; };
 		283CD4FE2BA3488CF303ED93 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436595534C0ACFBC123A8187 /* ContentView.swift */; };
 		7A1E0AD0260300000000 /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AD1260300000000 /* AppViewModel.swift */; };
+		AABBCCDD00000000000000A1 /* iMobileDeviceEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000A2 /* iMobileDeviceEnvironment.swift */; };
+		AABBCCDD00000000000000B1 /* CacheCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000B2 /* CacheCoordinator.swift */; };
 		2D0FE653840CA26E8F160D78 /* iMobileDeviceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D78A83AE538BD39519CF46 /* iMobileDeviceProtocol.swift */; };
 		3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */; };
 		7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */; };
@@ -49,6 +51,7 @@
 		3BF8BCF14A6060A5A5126DFF /* CleanupCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE590FA84C3140048350142D /* CleanupCategory.swift */; };
 		3C1201D0C253373F56A35912 /* PluginRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AF8CDBCCAF0AD7E39D4F59D /* PluginRegistry.swift */; };
 		3F5DCEE30421D1EE1C269948 /* StorageBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E918991CCFDA1CBD0F697A12 /* StorageBrowserView.swift */; };
+		AABBCCDD0000000000000FE1 /* FilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD0000000000000FE2 /* FilePreviewView.swift */; };
 		3F9B7CCB1517AA12C73BAFBA /* SmartCategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF91E4BCDB8CB88882EA899 /* SmartCategoriesView.swift */; };
 		4E02F2FA57315D94159C7D3A /* MockiMobileDeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFBBC2177DC92CFE105B5444 /* MockiMobileDeviceService.swift */; };
 		4E7EBEA251592857F35BF323 /* InputValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD784BF84D5CFCBFF474B86F /* InputValidatorTests.swift */; };
@@ -66,7 +69,11 @@
 		A087B6FD7825B8BE512CA769 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7FE78D58E198718FDC1BFEC /* SettingsView.swift */; };
 		A885E0ECE73C197ACA8312BC /* SpacieKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D74CE0020276507A39B599EA /* SpacieKit.xcframework */; };
 		AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */; };
+		AABBCCDD00000000000000C1 /* InstallFromArchiveViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000C2 /* InstallFromArchiveViewModelTests.swift */; };
 		7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */; };
+		AABBCCDD00000000000000D1 /* DevicePollDifferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000D2 /* DevicePollDifferTests.swift */; };
+		AABBCCDD00000000000000E1 /* DevicePollDiffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000E2 /* DevicePollDiffer.swift */; };
+		AABBCCDD00000000000000F1 /* ScanOrchestratorProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABBCCDD00000000000000F2 /* ScanOrchestratorProtocol.swift */; };
 		7A1E0AF4260500000004 /* iTransferStepIndicatorSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */; };
 		AC8D799C10433E4857C368EB /* BuiltInCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED018428B36C3363279DE186 /* BuiltInCategories.swift */; };
 		B3215625D3C1B518EC408126 /* AppArchiveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47AED639990BE677F360211D /* AppArchiveServiceTests.swift */; };
@@ -129,6 +136,8 @@
 		425A2ACA1ED2F065E9E55619 /* SunburstView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstView.swift; sourceTree = "<group>"; };
 		436595534C0ACFBC123A8187 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		7A1E0AD1260300000000 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000A2 /* iMobileDeviceEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iMobileDeviceEnvironment.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000B2 /* CacheCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheCoordinator.swift; sourceTree = "<group>"; };
 		47AED639990BE677F360211D /* AppArchiveServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppArchiveServiceTests.swift; sourceTree = "<group>"; };
 		4AB35CFBF929461A911362F2 /* DeepScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepScanner.swift; sourceTree = "<group>"; };
 		4E65E821F23C74AF3A077883 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -186,6 +195,7 @@
 		A1B2C3D4E5F60004 /* DeviceModelConversions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceModelConversions.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60006 /* DependencyTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DependencyTypes.swift; sourceTree = "<group>"; };
 		E918991CCFDA1CBD0F697A12 /* StorageBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageBrowserView.swift; sourceTree = "<group>"; };
+		AABBCCDD0000000000000FE2 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		EAEB60FE7EF3012891A9CAB3 /* ScanOrchestrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanOrchestrator.swift; sourceTree = "<group>"; };
 		ED018428B36C3363279DE186 /* BuiltInCategories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuiltInCategories.swift; sourceTree = "<group>"; };
 		ED86CED52114802D4B6A638B /* ScanCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanCache.swift; sourceTree = "<group>"; };
@@ -193,7 +203,11 @@
 		F4393ECD1E5F5D71C8496610 /* FileNode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileNode.swift; sourceTree = "<group>"; };
 		F7FE78D58E198718FDC1BFEC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferViewModelTests.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000C2 /* InstallFromArchiveViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallFromArchiveViewModelTests.swift; sourceTree = "<group>"; };
 		7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMPErrorMapperTests.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000D2 /* DevicePollDifferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePollDifferTests.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000E2 /* DevicePollDiffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePollDiffer.swift; sourceTree = "<group>"; };
+		AABBCCDD00000000000000F2 /* ScanOrchestratorProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanOrchestratorProtocol.swift; sourceTree = "<group>"; };
 		7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferStepIndicatorSnapshotTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -295,6 +309,7 @@
 			isa = PBXGroup;
 			children = (
 				7A1E0AD1260300000000 /* AppViewModel.swift */,
+				AABBCCDD00000000000000B2 /* CacheCoordinator.swift */,
 				436595534C0ACFBC123A8187 /* ContentView.swift */,
 				5D5FBC7F9C4A1AA57B3EF90C /* HomeView.swift */,
 				B1455692A18D219841B6421D /* InfoBarView.swift */,
@@ -309,6 +324,7 @@
 			children = (
 				47AED639990BE677F360211D /* AppArchiveServiceTests.swift */,
 				BD784BF84D5CFCBFF474B86F /* InputValidatorTests.swift */,
+				AABBCCDD00000000000000C2 /* InstallFromArchiveViewModelTests.swift */,
 				FA3BD28F117BBAF2F948D329 /* iTransferViewModelTests.swift */,
 				7A1E0AF5260500000004 /* iTransferStepIndicatorSnapshotTests.swift */,
 			);
@@ -318,6 +334,7 @@
 		7A1E0AB62601E0F100AB0004 /* KMPBridgeTests */ = {
 			isa = PBXGroup;
 			children = (
+				AABBCCDD00000000000000D2 /* DevicePollDifferTests.swift */,
 				7A1E0AB52601E0F100AB0003 /* KMPErrorMapperTests.swift */,
 			);
 			path = KMPBridgeTests;
@@ -413,6 +430,7 @@
 		547FC41D182050ECEA1E666A /* KMPBridge */ = {
 			isa = PBXGroup;
 			children = (
+				AABBCCDD00000000000000E2 /* DevicePollDiffer.swift */,
 				D8BA9B87F5EE57990D15C787 /* KMPDeviceServiceAdapter.swift */,
 				7A1E0AB32601E0F100AB0002 /* KMPErrorMapper.swift */,
 				A1B2C3D4E5F60001 /* KMPInputValidator.swift */,
@@ -511,6 +529,7 @@
 		AE5DC7EEE3900381AD4739B1 /* StorageBrowser */ = {
 			isa = PBXGroup;
 			children = (
+				AABBCCDD0000000000000FE2 /* FilePreviewView.swift */,
 				E918991CCFDA1CBD0F697A12 /* StorageBrowserView.swift */,
 			);
 			path = StorageBrowser;
@@ -592,6 +611,7 @@
 			isa = PBXGroup;
 			children = (
 				C74FB8726B818DF9D74B956C /* AppArchiveService.swift */,
+				AABBCCDD00000000000000A2 /* iMobileDeviceEnvironment.swift */,
 				06705C0001AB129681B4FCCA /* iMobileDeviceModels.swift */,
 				88D78A83AE538BD39519CF46 /* iMobileDeviceProtocol.swift */,
 				BFBBC2177DC92CFE105B5444 /* MockiMobileDeviceService.swift */,
@@ -618,6 +638,7 @@
 				2EBDED8FC05E986918D85D97 /* DiskScanner.swift */,
 				766194C9EF51D5FDC2CFB378 /* ScanExclusionManager.swift */,
 				EAEB60FE7EF3012891A9CAB3 /* ScanOrchestrator.swift */,
+				AABBCCDD00000000000000F2 /* ScanOrchestratorProtocol.swift */,
 				C7F955BBF081993C5F06F1F3 /* ShallowScanner.swift */,
 				41CC17FB1EED665D2E04169C /* SmartScanPrioritizer.swift */,
 			);
@@ -774,6 +795,8 @@
 				3BF8BCF14A6060A5A5126DFF /* CleanupCategory.swift in Sources */,
 				283CD4FE2BA3488CF303ED93 /* ContentView.swift in Sources */,
 				7A1E0AD0260300000000 /* AppViewModel.swift in Sources */,
+				AABBCCDD00000000000000A1 /* iMobileDeviceEnvironment.swift in Sources */,
+				AABBCCDD00000000000000B1 /* CacheCoordinator.swift in Sources */,
 				89E8EDA8AD74DAB2E7E438B6 /* DeepScanner.swift in Sources */,
 				C656216B756B8C7EB5F59D11 /* DiskScanner.swift in Sources */,
 				389DCF70EEB3E3D95C9C9A76 /* DropZoneView.swift in Sources */,
@@ -786,6 +809,7 @@
 				734995BEE6E87CA82828CEF9 /* HomeView.swift in Sources */,
 				D8A94CD4608A3031B7F8FCAE /* InfoBarView.swift in Sources */,
 				3027316B0A1564DAA4D0F004 /* KMPDeviceServiceAdapter.swift in Sources */,
+				AABBCCDD00000000000000E1 /* DevicePollDiffer.swift in Sources */,
 				7A1E0AB22601E0F100AB0002 /* KMPErrorMapper.swift in Sources */,
 				A1B2C3D4E5F60101 /* KMPInputValidator.swift in Sources */,
 				A1B2C3D4E5F60102 /* KMPScanProfile.swift in Sources */,
@@ -804,6 +828,7 @@
 				39308D5F9EF1B672D1637B35 /* ScanExclusionManager.swift in Sources */,
 				11AA450421744E1C80C5B802 /* ScanModels.swift in Sources */,
 				957B69D0D2F5357391E36E5B /* ScanOrchestrator.swift in Sources */,
+				AABBCCDD00000000000000F1 /* ScanOrchestratorProtocol.swift in Sources */,
 				A087B6FD7825B8BE512CA769 /* SettingsView.swift in Sources */,
 				107F442FDEFE60E4FA118522 /* ShallowScanner.swift in Sources */,
 				3F9B7CCB1517AA12C73BAFBA /* SmartCategoriesView.swift in Sources */,
@@ -812,6 +837,7 @@
 				1025C88738835A54EBDD7137 /* SpacieApp.swift in Sources */,
 				EBEAC82C0A8CB2FD23F1E317 /* SpacieColors.swift in Sources */,
 				3F5DCEE30421D1EE1C269948 /* StorageBrowserView.swift in Sources */,
+				AABBCCDD0000000000000FE1 /* FilePreviewView.swift in Sources */,
 				F510C3B810AAE41107BAF9A5 /* StorageOverviewView.swift in Sources */,
 				EB87C715A211E33383A8E6BB /* StringPool.swift in Sources */,
 				C3F80A3D178A487742629739 /* SunburstView.swift in Sources */,
@@ -841,7 +867,9 @@
 				4E7EBEA251592857F35BF323 /* InputValidatorTests.swift in Sources */,
 				C681EE7E36B8DFA3D65E8027 /* ScannerSizeInvariantTests.swift in Sources */,
 				AA0AF331C4BB108EDD533F70 /* iTransferViewModelTests.swift in Sources */,
+				AABBCCDD00000000000000C1 /* InstallFromArchiveViewModelTests.swift in Sources */,
 				7A1E0AB42601E0F100AB0003 /* KMPErrorMapperTests.swift in Sources */,
+				AABBCCDD00000000000000D1 /* DevicePollDifferTests.swift in Sources */,
 				7A1E0AF4260500000004 /* iTransferStepIndicatorSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

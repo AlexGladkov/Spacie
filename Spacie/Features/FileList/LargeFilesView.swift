@@ -85,14 +85,21 @@ final class LargeFilesViewModel {
 
     // MARK: Refresh
 
+    // Regular MainActor-isolated; cancelled from `isolated deinit` (Swift 6.1+).
     private var refreshTask: Task<Void, Never>?
+
+    isolated deinit {
+        // Cancel the detached scan so a dismissed view-model doesn't keep
+        // walking the FileTree (5M+ nodes) and mutating orphaned MainActor state.
+        refreshTask?.cancel()
+    }
 
     func refresh(tree: FileTree, sizeMode: SizeMode) {
         refreshTask?.cancel()
         isRefreshing = true
 
         let currentMode = mode
-        refreshTask = Task {
+        refreshTask = Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 switch currentMode {
                 case .topN(let count):
@@ -104,6 +111,7 @@ final class LargeFilesViewModel {
                 }
             }.value
 
+            guard let self else { return }
             guard !Task.isCancelled else { return }
 
             self.files = result

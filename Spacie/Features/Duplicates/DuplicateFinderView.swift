@@ -39,7 +39,15 @@ final class DuplicateFinderViewModel {
     // MARK: Engine
 
     private let engine = DuplicateEngine()
+    // Regular MainActor-isolated; cancelled from `isolated deinit` (Swift 6.1+).
     private var scanTask: Task<Void, Never>?
+
+    isolated deinit {
+        // Cancel any in-flight hash scan when the view-model is released —
+        // otherwise the engine continues hashing a tree nobody is reading,
+        // pinning the FileTree alive and burning CPU.
+        scanTask?.cancel()
+    }
 
     // MARK: Cached Computed (updated only when source data changes)
 
@@ -111,8 +119,12 @@ final class DuplicateFinderViewModel {
         selectedFileIds.removeAll()
         state = .groupingBySize
 
-        scanTask = Task {
-            let stream = await engine.findDuplicates(in: tree, filterOptions: filterOptions)
+        // [weak self] prevents the hash engine from retaining a dismissed
+        // view-model and continuing to mutate `groups` (which triggers the
+        // didSet sort/filter cascade) on a view-model nobody is observing.
+        scanTask = Task { [weak self] in
+            guard let self else { return }
+            let stream = await self.engine.findDuplicates(in: tree, filterOptions: self.filterOptions)
 
             for await event in stream {
                 guard !Task.isCancelled else { break }

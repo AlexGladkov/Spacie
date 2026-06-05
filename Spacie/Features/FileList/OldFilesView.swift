@@ -75,7 +75,14 @@ final class OldFilesViewModel {
 
     // MARK: Refresh
 
+    // Regular MainActor-isolated; cancelled from `isolated deinit` (Swift 6.1+).
     private var refreshTask: Task<Void, Never>?
+
+    isolated deinit {
+        // Cancel the detached scan so a dismissed view-model doesn't keep
+        // walking the FileTree (5M+ nodes) and mutating orphaned MainActor state.
+        refreshTask?.cancel()
+    }
 
     func refresh(tree: FileTree) {
         refreshTask?.cancel()
@@ -83,7 +90,7 @@ final class OldFilesViewModel {
 
         let cutoff = Date().addingTimeInterval(-ageThreshold)
 
-        refreshTask = Task {
+        refreshTask = Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 var found: [FileNodeInfo] = []
                 let count = tree.nodeCount
@@ -98,6 +105,7 @@ final class OldFilesViewModel {
                 return found
             }.value
 
+            guard let self else { return }
             guard !Task.isCancelled else { return }
 
             self.files = result

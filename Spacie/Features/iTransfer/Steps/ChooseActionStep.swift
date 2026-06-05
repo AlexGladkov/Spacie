@@ -58,6 +58,18 @@ struct ChooseActionStepView: View {
             }
             .frame(maxWidth: 500)
 
+            // Surface archiveDir validation errors that
+            // `proceedFromChooseAction` writes to `lastError`. Without this,
+            // a Continue tap on an unwritable archive folder appeared to
+            // silently no-op — user couldn't tell what went wrong.
+            if let error = viewModel.lastError {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 500)
+            }
+
             Button("Continue") {
                 viewModel.proceedFromChooseAction()
             }

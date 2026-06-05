@@ -16,9 +16,11 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.autoreleasepool
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
@@ -39,10 +41,10 @@ import platform.Foundation.dataWithBytes
 internal class IDeviceClient(
     private val runner: ProcessRunnerApi,
     private val paths: ToolPaths,
-) {
+) : IDeviceClientApi {
 
     /** `idevice_id -l` then `ideviceinfo` for each UDID. */
-    suspend fun listDevices(): List<DeviceInfo> {
+    override suspend fun listDevices(): List<DeviceInfo> {
         val ideviceId = paths.require("idevice_id")
         val ideviceInfo = paths.require("ideviceinfo")
 
@@ -72,7 +74,7 @@ internal class IDeviceClient(
     }
 
     /** `idevicepair validate -u <udid>` → maps to [TrustState]. Best-effort: swallows errors. */
-    suspend fun validateTrust(udid: String): TrustState {
+    override suspend fun validateTrust(udid: String): TrustState {
         try {
             InputValidator.validateUDID(udid)
         } catch (_: Exception) {
@@ -105,7 +107,7 @@ internal class IDeviceClient(
     }
 
     /** `ideviceinstaller -u <udid> list --xml` → parsed plist → [AppInfo] list. */
-    suspend fun listApps(udid: String): List<AppInfo> {
+    override suspend fun listApps(udid: String): List<AppInfo> {
         InputValidator.validateUDID(udid)
         val ideviceinstaller = paths.require("ideviceinstaller")
 
@@ -124,7 +126,7 @@ internal class IDeviceClient(
     }
 
     /** `ideviceinstaller -u <udid> install <ipa>` with progress parsing. */
-    suspend fun installIPA(udid: String, ipaPath: String, onProgress: (Double) -> Unit) {
+    override suspend fun installIPA(udid: String, ipaPath: String, onProgress: (Double) -> Unit) {
         InputValidator.validateUDID(udid)
         if (!pathExists(ipaPath)) throw SpacieError.IpaFileNotFound(ipaPath)
 
@@ -170,50 +172,74 @@ internal class IDeviceClient(
     private fun parseAppList(data: ByteArray): List<AppInfo> {
         if (data.isEmpty()) return emptyList()
 
-        val nsData: NSData = data.usePinned { pin ->
-            NSData.dataWithBytes(pin.addressOf(0), length = data.size.toULong()) ?: NSData()
-        }
-
-        val plist: Any? = memScoped {
-            val errorPtr = alloc<ObjCObjectVar<NSError?>>()
-            NSPropertyListSerialization.propertyListWithData(
-                data = nsData,
-                options = NSPropertyListMutableContainersAndLeaves,
-                format = null,
-                error = errorPtr.ptr
-            )
-        }
-
-        val array = plist as? List<Any?> ?: return emptyList()
-
-        return array.mapNotNull { item ->
-            val dict = item as? Map<Any?, Any?> ?: return@mapNotNull null
-            val bundleID = dict["CFBundleIdentifier"] as? String ?: return@mapNotNull null
-
-            try {
-                InputValidator.validateBundleID(bundleID)
-            } catch (_: Exception) {
-                return@mapNotNull null
+        // Wrap the entire NSData → plist → AppInfo materialisation in an
+        // autorelease pool. Foundation creates autoreleased objects (NSData,
+        // NSString instances inside the plist, NSArray/NSDictionary wrappers)
+        // that otherwise accumulate on the background coroutine thread until
+        // the next suspension point. The Kotlin/Native bridge copies each
+        // String/Long out into Kotlin heap during the cast, so the returned
+        // `List<AppInfo>` survives the pool drain.
+        return autoreleasepool {
+            val nsData: NSData = data.usePinned { pin ->
+                NSData.dataWithBytes(pin.addressOf(0), length = data.size.toULong()) ?: NSData()
             }
 
-            val displayName = (dict["CFBundleDisplayName"] as? String)
-                ?: (dict["CFBundleName"] as? String)
-                ?: bundleID
-            val version = (dict["CFBundleVersion"] as? String) ?: "0"
-            val shortVersion = (dict["CFBundleShortVersionString"] as? String) ?: version
-            val ipaSize = when (val raw = dict["StaticDiskUsage"]) {
-                is NSNumber -> raw.longLongValue
-                else -> null
+            // Read errorPtr.value if the plist parse fails so callers get an
+            // actionable error instead of an empty app list. Previously a
+            // malformed plist (encoding corruption, partial read, unexpected
+            // shape) silently returned `emptyList()` and the UI showed "0
+            // apps" with no indication of failure.
+            val plist: Any? = memScoped {
+                val errorPtr = alloc<ObjCObjectVar<NSError?>>()
+                val result = NSPropertyListSerialization.propertyListWithData(
+                    data = nsData,
+                    options = NSPropertyListMutableContainersAndLeaves,
+                    format = null,
+                    error = errorPtr.ptr
+                )
+                if (result == null) {
+                    val msg = errorPtr.value?.localizedDescription
+                        ?: "Malformed plist returned by ideviceinstaller"
+                    throw SpacieError.AppListParseFailed(msg, rawOutput = "")
+                }
+                result
             }
 
-            AppInfo(
-                bundleID = bundleID,
-                displayName = InputValidator.sanitizeDisplayName(displayName, 100),
-                version = version,
-                shortVersion = shortVersion,
-                ipaSize = ipaSize,
-                iconData = null
-            )
+            val array = plist as? List<Any?>
+                ?: throw SpacieError.AppListParseFailed(
+                    "ideviceinstaller plist root was not an array",
+                    rawOutput = ""
+                )
+
+            array.mapNotNull { item ->
+                val dict = item as? Map<Any?, Any?> ?: return@mapNotNull null
+                val bundleID = dict["CFBundleIdentifier"] as? String ?: return@mapNotNull null
+
+                try {
+                    InputValidator.validateBundleID(bundleID)
+                } catch (_: Exception) {
+                    return@mapNotNull null
+                }
+
+                val displayName = (dict["CFBundleDisplayName"] as? String)
+                    ?: (dict["CFBundleName"] as? String)
+                    ?: bundleID
+                val version = (dict["CFBundleVersion"] as? String) ?: "0"
+                val shortVersion = (dict["CFBundleShortVersionString"] as? String) ?: version
+                val ipaSize = when (val raw = dict["StaticDiskUsage"]) {
+                    is NSNumber -> raw.longLongValue
+                    else -> null
+                }
+
+                AppInfo(
+                    bundleID = bundleID,
+                    displayName = InputValidator.sanitizeDisplayName(displayName, 100),
+                    version = version,
+                    shortVersion = shortVersion,
+                    ipaSize = ipaSize,
+                    iconData = null
+                )
+            }
         }
     }
 }

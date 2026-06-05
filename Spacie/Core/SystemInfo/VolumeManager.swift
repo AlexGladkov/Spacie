@@ -42,10 +42,11 @@ final class VolumeManager: VolumeManaging {
 
     // MARK: - Private
 
+    // Regular MainActor-isolated; touched from `isolated deinit` (Swift 6.1+).
     @ObservationIgnored
-    nonisolated(unsafe) private var mountObserver: NSObjectProtocol?
+    private var mountObserver: NSObjectProtocol?
     @ObservationIgnored
-    nonisolated(unsafe) private var unmountObserver: NSObjectProtocol?
+    private var unmountObserver: NSObjectProtocol?
 
     // MARK: - Initialization
 
@@ -103,7 +104,12 @@ final class VolumeManager: VolumeManaging {
     /// Attempts to list APFS snapshots for the given volume UUID.
     /// Stays in Swift — KMP does not provide diskutil parsing.
     func listAPFSSnapshots(volumeUUID: String) async -> [APFSSnapshotInfo] {
-        await withCheckedContinuation { continuation in
+        // Offload to a detached task: Process.run + waitUntilExit + the
+        // subsequent readDataToEndOfFile all block the caller's thread. When
+        // invoked from a MainActor context (Settings UI / dependency checks),
+        // this previously froze the UI for the duration of `diskutil apfs
+        // listSnapshots`.
+        await Task.detached(priority: .userInitiated) {
             let process = Process()
             let pipe = Pipe()
 
@@ -118,21 +124,18 @@ final class VolumeManager: VolumeManaging {
 
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 guard let output = String(data: data, encoding: .utf8) else {
-                    continuation.resume(returning: [])
-                    return
+                    return [APFSSnapshotInfo]()
                 }
-
-                let snapshots = Self.parseSnapshots(output)
-                continuation.resume(returning: snapshots)
+                return Self.parseSnapshots(output)
             } catch {
-                continuation.resume(returning: [])
+                return [APFSSnapshotInfo]()
             }
-        }
+        }.value
     }
 
     // MARK: - Private Helpers
 
-    private static func parseSnapshots(_ output: String) -> [APFSSnapshotInfo] {
+    nonisolated private static func parseSnapshots(_ output: String) -> [APFSSnapshotInfo] {
         var snapshots: [APFSSnapshotInfo] = []
         let lines = output.components(separatedBy: .newlines)
 
@@ -181,7 +184,7 @@ final class VolumeManager: VolumeManaging {
         return snapshots
     }
 
-    deinit {
+    isolated deinit {
         let center = NSWorkspace.shared.notificationCenter
         if let observer = mountObserver { center.removeObserver(observer) }
         if let observer = unmountObserver { center.removeObserver(observer) }

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalForeignApi::class)
+@file:OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 
 package com.spacie.core.api
 
@@ -11,34 +11,55 @@ import com.spacie.core.model.TransferPhase
 import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.value
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.isActive
 import platform.Foundation.NSError
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSUUID
-import kotlin.coroutines.cancellation.CancellationException as KotlinCancellationException
 
 /**
  * Per-item transfer loop (extract → archive → install) and device-list polling.
  *
  * Extracted from `DeviceServiceImpl` (Sprint 4.5 god-class split). Composes
  * [IpaToolClient] (for IPA download), [IDeviceClient] (for trust + install),
- * and [IpaArchiveWriter] (for the optional archive copy) — none of those
+ * and [IpaArchiveWriterApi] (for the optional archive copy) — none of those
  * collaborators know about transfer state or progress emission, which keeps
  * each layer testable in isolation.
+ *
+ * ## NOT USED FROM THE SWIFT macOS APP
+ *
+ * The production macOS Swift app (`KMPDeviceServiceAdapter`) implements its
+ * own `transferApps` and `observeDevices` loops natively — see
+ * `Spacie/Core/KMPBridge/KMPDeviceServiceAdapter.swift`. The Swift
+ * implementation is preferred there because:
+ *  - KMP `CommonFlow.watch()` deadlocks under Swift structured concurrency
+ *    (documented in memory + iter1 audit).
+ *  - The Swift loop integrates with iTransferViewModel's task tracking
+ *    (cancellation, isTransferInFlight flag, generation counters) which
+ *    has no equivalent in this KMP class.
+ *
+ * This KMP class remains for **future Compose Desktop / non-Swift
+ * consumers**. Any change to the transfer flow MUST be mirrored across
+ * both implementations until the dead code is formally removed.
  */
 internal class TransferOrchestrator(
-    private val ipaTool: IpaToolClient,
-    private val iDevice: IDeviceClient,
-    private val archiveWriter: IpaArchiveWriter,
+    private val ipaTool: IpaToolClientApi,
+    private val iDevice: IDeviceClientApi,
+    private val archiveWriter: IpaArchiveWriterApi,
 ) {
 
     /**
@@ -68,10 +89,15 @@ internal class TransferOrchestrator(
         val fm = NSFileManager.defaultManager
 
         for (i in items.indices) {
-            if (!currentCoroutineContext().isActive) break
+            currentCoroutineContext().ensureActive()
             val app = items[i].app
 
-            val tempDir = NSTemporaryDirectory() + NSUUID().UUIDString
+            // NSTemporaryDirectory() may or may not end with a trailing `/`
+            // depending on macOS version / config. Normalize so the
+            // resulting path is never `…//<uuid>`, which would cause
+            // removeItemAtPath cleanup to silently fail on some platforms.
+            val tempBase = NSTemporaryDirectory().removeSuffix("/")
+            val tempDir = "$tempBase/${NSUUID().UUIDString}"
             val dirCreated = memScoped {
                 val errorPtr = alloc<ObjCObjectVar<NSError?>>()
                 fm.createDirectoryAtPath(
@@ -92,10 +118,20 @@ internal class TransferOrchestrator(
                 items = items.transitionTo(i, TransferPhase.EXTRACTING)
                 emit(TransferProgress(items, i))
 
+                // Per-item progress is recorded into the in-memory items
+                // snapshot so the next phase boundary emit carries the
+                // latest value. Emitting from the synchronous onProgress
+                // callback would require crossing into the flow's
+                // coroutine — risky from K/N off-thread callbacks — so
+                // intra-phase progress is rendered as a step rather than a
+                // smooth bar. Acceptable for the current Compose consumer;
+                // the Swift adapter has its own per-progress emit loop.
                 val ipaPath = ipaTool.downloadIPA(
                     bundleID = app.bundleID,
                     destinationDir = tempDir,
-                    onProgress = {}
+                    onProgress = { progress ->
+                        items = items.updateProgress(i, progress)
+                    }
                 )
 
                 if (archiveDir != null) {
@@ -107,20 +143,39 @@ internal class TransferOrchestrator(
                 if (shouldInstall && destinationUDID != null) {
                     items = items.transitionTo(i, TransferPhase.INSTALLING)
                     emit(TransferProgress(items, i))
-                    iDevice.installIPA(udid = destinationUDID, ipaPath = ipaPath, onProgress = {})
+                    iDevice.installIPA(
+                        udid = destinationUDID,
+                        ipaPath = ipaPath,
+                        onProgress = { progress ->
+                            items = items.updateProgress(i, progress)
+                        }
+                    )
                 }
 
                 items = items.markCompleted(i)
                 emit(TransferProgress(items, i))
             } catch (e: CancellationException) {
-                throw e
-            } catch (e: KotlinCancellationException) {
+                // kotlinx.coroutines.CancellationException and
+                // kotlin.coroutines.cancellation.CancellationException are
+                // the SAME class — the previous second `catch` block was
+                // unreachable dead code and would mislead anyone adding
+                // logic inside it.
                 throw e
             } catch (e: Exception) {
                 items = items.markFailed(i, reason = e.message)
                 emit(TransferProgress(items, i))
             } finally {
-                fm.removeItemAtPath(tempDir, error = null)
+                // Surface tempDir cleanup failures via errorPtr instead of
+                // dropping them — silent fails let aborted transfers accumulate
+                // partial dirs under NSTemporaryDirectory.
+                memScoped {
+                    val errorPtr = alloc<ObjCObjectVar<NSError?>>()
+                    fm.removeItemAtPath(tempDir, error = errorPtr.ptr)
+                    val err = errorPtr.value
+                    if (err != null) {
+                        println("[TransferOrchestrator] tempDir cleanup failed at $tempDir: ${err.localizedDescription}")
+                    }
+                }
             }
         }
     }.asCommonFlow()
@@ -155,16 +210,40 @@ internal class TransferOrchestrator(
 
                     knownUDIDs = currentUDIDs
 
-                    for (device in devices) {
-                        val newState = iDevice.validateTrust(device.udid)
-                        if (knownTrustStates[device.udid] != newState) {
-                            knownTrustStates[device.udid] = newState
-                            emit(DeviceEvent.TrustStateChanged(device.udid, newState))
+                    // Validate trust for all devices in parallel — sequential
+                    // N×5s timeouts would make the polling interval depend on
+                    // device count (timing drift). `supervisorScope` isolates
+                    // per-device failures so one ideviceinfo crash or
+                    // cancellation doesn't kill all siblings; `awaitAll`
+                    // would otherwise rethrow into the outer scope and abort
+                    // every parallel branch.
+                    val trustResults: List<Pair<String, TrustState>> = supervisorScope {
+                        devices.map { device ->
+                            async {
+                                currentCoroutineContext().ensureActive()
+                                try {
+                                    device.udid to iDevice.validateTrust(device.udid)
+                                } catch (e: CancellationException) {
+                                    // Rethrow cancellation — runCatching here
+                                    // would swallow CE and delay the polling
+                                    // loop's response to cancellation by a
+                                    // full interval.
+                                    throw e
+                                } catch (_: Throwable) {
+                                    device.udid to TrustState.NOT_TRUSTED
+                                }
+                            }
+                        }.awaitAll()
+                    }
+
+                    for ((udid, newState) in trustResults) {
+                        if (knownTrustStates[udid] != newState) {
+                            knownTrustStates[udid] = newState
+                            emit(DeviceEvent.TrustStateChanged(udid, newState))
                         }
                     }
                 } catch (e: CancellationException) {
-                    throw e
-                } catch (e: KotlinCancellationException) {
+                    // Single CancellationException class (see above).
                     throw e
                 } catch (e: Exception) {
                     emit(DeviceEvent.Error(e.message ?: "Unknown error"))
@@ -187,4 +266,7 @@ internal class TransferOrchestrator(
         toMutableList().also {
             it[index] = it[index].copy(phase = TransferPhase.FAILED, errorMessage = reason)
         }
+
+    private fun List<TransferItem>.updateProgress(index: Int, progress: Double): List<TransferItem> =
+        toMutableList().also { it[index] = it[index].copy(progress = progress) }
 }

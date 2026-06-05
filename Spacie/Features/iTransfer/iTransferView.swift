@@ -73,7 +73,12 @@ struct iTransferView: View {
             if let onDismiss {
                 ToolbarItem(placement: .navigation) {
                     Button {
-                        viewModel.stopDeviceObservation()
+                        // Use the same single teardown entry point as
+                        // `.onDisappear` — NavigationStack pop is not
+                        // guaranteed to fire .onDisappear, so an in-flight
+                        // brew install or Apple-ID login would otherwise
+                        // keep mutating wizardData on the orphan VM.
+                        viewModel.teardownForDismiss()
                         onDismiss()
                     } label: {
                         Label("Back", systemImage: "chevron.left")
@@ -97,8 +102,11 @@ struct iTransferView: View {
             await viewModel.checkDependencies()
         }
         .onDisappear {
-            viewModel.stopDeviceObservation()
-            viewModel.cancelTransfer()
+            // Single teardown entry point — covers all task handles so a
+            // multi-minute brew install or Apple-ID login can't continue
+            // mutating wizardData after Back/dismiss. ARC-driven deinit
+            // can lag behind for @Observable @State VMs.
+            viewModel.teardownForDismiss()
         }
     }
 }
@@ -137,14 +145,18 @@ struct iTransferView: View {
 }
 #endif
 
-// MARK: - iTransferView(viewModel:) preview hook
+// MARK: - iTransferView(viewModel:) injection hook
 
-#if DEBUG
 extension iTransferView {
-    /// Preview-only initializer that injects a preconfigured VM.
+    /// Initializer that injects a preconfigured ``iTransferViewModel``.
+    ///
+    /// Use this when the wizard needs to be opened with custom state — for
+    /// example a deep-link that pre-selects apps, a test harness that injects
+    /// mocked services, or a Preview that sets up a deterministic state.
+    /// Production callers without special needs can keep using the no-arg
+    /// initializer, which constructs the VM with KMP-backed defaults.
     init(viewModel: iTransferViewModel) {
         self.init()
         self._viewModel = State(initialValue: viewModel)
     }
 }
-#endif

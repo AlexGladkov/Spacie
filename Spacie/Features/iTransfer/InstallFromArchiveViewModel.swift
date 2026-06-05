@@ -29,17 +29,32 @@ final class InstallFromArchiveViewModel {
 
     private let service: any iMobileDeviceProtocol
 
+    // Regular MainActor-isolated; cancelled from `isolated deinit` below.
     @ObservationIgnored
     private var observationTask: Task<Void, Never>?
+    /// Tracked so the install can be cancelled when the sheet is dismissed
+    /// (otherwise the previous fire-and-forget pattern let the KMP install
+    /// stream complete and mutate `installDone`/`installError` on an orphaned
+    /// MainActor view-model — same defect class as the iTransfer trust update).
+    @ObservationIgnored
+    private var installTask: Task<Void, Error>?
 
     // MARK: - Init
 
     init(
         app: ArchivedApp,
-        service: any iMobileDeviceProtocol = KMPDeviceServiceAdapter()
+        service: any iMobileDeviceProtocol = SharedDeviceServices.device
     ) {
         self.app = app
         self.service = service
+    }
+
+    isolated deinit {
+        // Safety net: .onDisappear may not always fire when the sheet is
+        // dismissed via cmd-W or app termination. Sync cancel from deinit
+        // guarantees the device observation stream is released.
+        observationTask?.cancel()
+        installTask?.cancel()
     }
 
     // MARK: - Lifecycle
@@ -72,21 +87,51 @@ final class InstallFromArchiveViewModel {
     /// Install [app] to the connected device.
     func beginInstall() async {
         guard let udid = device?.udid else { return }
+
+        // Defer hoisted to function top so isInstalling/installTask reset
+        // regardless of which early-return path the body takes. Placement
+        // after the `for await` loop (the previous arrangement) worked
+        // today but would silently break if anyone added another early
+        // return above it.
+        defer {
+            installTask = nil
+            isInstalling = false
+        }
+
         installError = nil
         isInstalling = true
         installProgress = 0
-        do {
-            try await service.installIPA(udid: udid, ipaPath: app.ipaURL) { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    self?.installProgress = progress
-                }
+
+        // Funnel off-actor progress callbacks through a single AsyncStream
+        // instead of spawning one Task per update.
+        let (progressStream, progressContinuation) = AsyncStream<Double>.makeStream()
+
+        // Track the install task so deinit/cancellation can interrupt the
+        // in-flight KMP installIPA stream.
+        let task = Task {
+            defer { progressContinuation.finish() }
+            try await service.installIPA(udid: udid, ipaPath: app.ipaURL) { progress in
+                progressContinuation.yield(progress)
             }
+        }
+        installTask = task
+
+        for await progress in progressStream {
+            if Task.isCancelled { break }
+            installProgress = progress
+        }
+
+        do {
+            _ = try await task.value
+            if Task.isCancelled { return }
             installDone = true
             stopObservingDevice()
+        } catch is CancellationError {
+            return
         } catch {
+            if Task.isCancelled { return }
             installError = error.localizedDescription
         }
-        isInstalling = false
     }
 
     // MARK: - Private

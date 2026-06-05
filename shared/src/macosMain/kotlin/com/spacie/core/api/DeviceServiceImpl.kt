@@ -10,10 +10,6 @@ import com.spacie.core.model.TrustState
 import com.spacie.core.platform.HomebrewResolver
 import com.spacie.core.platform.ProcessRunner
 import com.spacie.core.platform.ProcessRunnerApi
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlin.experimental.ExperimentalObjCName
 import kotlin.native.ObjCName
 
@@ -42,27 +38,56 @@ class DeviceServiceImpl internal constructor(
 
     /**
      * Production constructor — wires the real Homebrew resolver + platform
-     * [ProcessRunner].
+     * [ProcessRunner]. Shares a single [ToolPaths] instance and a single
+     * [IpaToolClient]/[IDeviceClient] across the facade and orchestrator so
+     * the object graph stays minimal and HomebrewResolver's cache is reused.
      */
-    constructor(
+    internal constructor(
         runner: ProcessRunnerApi = ProcessRunner(),
         resolver: HomebrewResolver = HomebrewResolver(),
-        archiveWriter: IpaArchiveWriter = IpaArchiveWriter(),
+        archiveWriter: IpaArchiveWriterApi = IpaArchiveWriter(),
     ) : this(
-        dependencies = DependencyManagerMac(runner, resolver),
-        ipaTool = IpaToolClient(runner, ToolPaths(resolver)),
-        iDevice = IDeviceClient(runner, ToolPaths(resolver)),
-        orchestrator = TransferOrchestrator(
-            ipaTool = IpaToolClient(runner, ToolPaths(resolver)),
-            iDevice = IDeviceClient(runner, ToolPaths(resolver)),
-            archiveWriter = archiveWriter,
-        ),
+        runner = runner,
+        toolPaths = ToolPaths(resolver),
+        archiveWriter = archiveWriter,
+        dependenciesFactory = { DependencyManagerMac(runner, resolver) },
     )
 
     /**
-     * Bound to in-flight observation / transfer coroutines (see [cancel]).
+     * Helper constructor — shares a single [ToolPaths] (and therefore a single
+     * pair of clients) across this facade and the orchestrator.
      */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private constructor(
+        runner: ProcessRunnerApi,
+        toolPaths: ToolPaths,
+        archiveWriter: IpaArchiveWriterApi,
+        dependenciesFactory: () -> DependencyManagerMac,
+    ) : this(
+        ipaTool = IpaToolClient(runner, toolPaths),
+        iDevice = IDeviceClient(runner, toolPaths),
+        archiveWriter = archiveWriter,
+        dependencies = dependenciesFactory(),
+    )
+
+    /**
+     * Internal aggregating constructor — shares a single client pair between
+     * facade and orchestrator, eliminating the previous 4× client duplication.
+     */
+    private constructor(
+        ipaTool: IpaToolClient,
+        iDevice: IDeviceClient,
+        archiveWriter: IpaArchiveWriterApi,
+        dependencies: DependencyManagerMac,
+    ) : this(
+        dependencies = dependencies,
+        ipaTool = ipaTool,
+        iDevice = iDevice,
+        orchestrator = TransferOrchestrator(
+            ipaTool = ipaTool,
+            iDevice = iDevice,
+            archiveWriter = archiveWriter,
+        ),
+    )
 
     // -- DependencyManagerApi (delegated to [dependencies]) --
 
@@ -93,6 +118,15 @@ class DeviceServiceImpl internal constructor(
 
     override suspend fun listApps(udid: String): List<AppInfo> = iDevice.listApps(udid)
 
+    /**
+     * Extracts an IPA for [bundleID].
+     *
+     * `udid` is accepted at the API boundary for forward compatibility with
+     * future device-bound extraction strategies (e.g. iTunes Backup parsing).
+     * The current macOS implementation uses `ipatool`, which downloads from
+     * the signed-in Apple ID account rather than directly from the device,
+     * so `udid` is not forwarded to the binary.
+     */
     override suspend fun extractIPA(
         udid: String,
         bundleID: String,
@@ -118,12 +152,18 @@ class DeviceServiceImpl internal constructor(
     )
 
     /**
-     * Cancels the service-owned scope. The cold `flow {}` blocks returned by
-     * [observeDevices] / [transferApps] honour their **collector's**
-     * cancellation, not this scope — cancelling the coroutine that collects
-     * the flow is the primary stop mechanism.
+     * Documented no-op.
+     *
+     * The cold `flow {}` blocks returned by [observeDevices] / [transferApps]
+     * honour the **collector's** cancellation, not any service-owned scope.
+     * The previous implementation kept a `SupervisorJob` scope here that was
+     * never used to `launch` anything — `cancel()` cancelled an empty scope
+     * and gave callers the false impression that streams were being stopped.
+     *
+     * To stop a stream, cancel the coroutine that collects it (on Swift side:
+     * cancel the `Task` consuming the `AsyncStream`).
      */
     override fun cancel() {
-        scope.cancel()
+        // Intentionally empty. See KDoc.
     }
 }

@@ -233,6 +233,13 @@ final class ScanOrchestrator {
         scanTask = nil
         rescanTask?.cancel()
         rescanTask = nil
+        // Detach orchestrator-owned callbacks so a late detached-task hop
+        // (insertBatch / aggregateSizes / onTreeUpdate) cannot fire against
+        // the just-cleared `tree`/`phase` state and resurrect torn UI.
+        onPhaseChange = nil
+        onProgress = nil
+        onTreeUpdate = nil
+        onRestricted = nil
         shallowTree = nil
         deepTree = nil
         phase = .red
@@ -250,6 +257,15 @@ final class ScanOrchestrator {
         rescan?.cancel()
         scanTask = nil
         rescanTask = nil
+        // Mirror cancel(): drop the orchestrator-owned callbacks BEFORE
+        // awaiting the tasks. Otherwise a late detached hop (insertBatch
+        // / aggregateSizes / onTreeUpdate) firing after cancelAndWait
+        // returns can resurrect the tree in the UI while the caller has
+        // already cleared state in preparation for a fresh scan.
+        onPhaseChange = nil
+        onProgress = nil
+        onTreeUpdate = nil
+        onRestricted = nil
         _ = await scan?.value
         _ = await rescan?.value
         shallowTree = nil
@@ -466,15 +482,24 @@ final class ScanOrchestrator {
             case .filesBatch(let nodes):
                 insertBuffer.append(contentsOf: nodes)
                 if insertBuffer.count >= insertBatchSize {
-                    tree.insertBatch(insertBuffer)
+                    let toInsert = insertBuffer
                     insertBuffer.removeAll(keepingCapacity: true)
+                    // Offload heavy insert off MainActor — FileTree has internal
+                    // locking, but inserting 4K nodes inline blocks the consumer
+                    // loop and freezes the UI on large volumes.
+                    await Task.detached(priority: .userInitiated) {
+                        tree.insertBatch(toInsert)
+                    }.value
                 }
 
             case .directoryCompleted(let path, let dirIndex, _):
                 // Flush pending nodes before processing directory completion
                 if !insertBuffer.isEmpty {
-                    tree.insertBatch(insertBuffer)
+                    let toInsert = insertBuffer
                     insertBuffer.removeAll(keepingCapacity: true)
+                    await Task.detached(priority: .userInitiated) {
+                        tree.insertBatch(toInsert)
+                    }.value
                 }
                 lastCompletedDirIndex = dirIndex
 
@@ -488,8 +513,13 @@ final class ScanOrchestrator {
                 let elapsed = now - lastTreeUpdateTime
                 if elapsed >= .seconds(Self.treeUpdateThrottleInterval) {
                     lastTreeUpdateTime = now
-                    tree.aggregateSizes()
-                    directorySizeMap[path] = tree.logicalSize(ofPath: path)
+                    // Aggregate off MainActor — O(N) traversal of the entire tree
+                    // would otherwise lock the UI on every throttle tick.
+                    let aggregatedPathSize = await Task.detached(priority: .userInitiated) {
+                        tree.aggregateSizes()
+                        return tree.logicalSize(ofPath: path)
+                    }.value
+                    directorySizeMap[path] = aggregatedPathSize
                     self.onTreeUpdate?(tree)
                 }
 
@@ -515,18 +545,20 @@ final class ScanOrchestrator {
             case .smartThresholdReached(let coverage, let scannedBytes):
                 // Flush pending nodes before finalizing
                 if !insertBuffer.isEmpty {
-                    tree.insertBatch(insertBuffer)
+                    let toInsert = insertBuffer
                     insertBuffer.removeAll(keepingCapacity: true)
+                    await Task.detached(priority: .userInitiated) {
+                        tree.insertBatch(toInsert)
+                    }.value
                 }
-                // Smart Scan threshold reached: finalize partial tree
-                tree.aggregateSizes()
-
-                // Calculate "Other" size: estimated used space minus what we scanned
+                // Smart Scan threshold reached: finalize partial tree (off main).
                 let otherSize = max(0, Int64(usedSpace) - Int64(scannedBytes))
-                tree.insertVirtualOtherNode(otherSize: UInt64(otherSize))
-
-                // Re-aggregate so root includes the virtual Other node
-                tree.aggregateSizes()
+                await Task.detached(priority: .userInitiated) {
+                    tree.aggregateSizes()
+                    tree.insertVirtualOtherNode(otherSize: UInt64(otherSize))
+                    // Re-aggregate so root includes the virtual Other node
+                    tree.aggregateSizes()
+                }.value
 
                 // Store remaining directories (everything after the last completed)
                 let remainingStartIndex = lastCompletedDirIndex + 1
@@ -569,16 +601,21 @@ final class ScanOrchestrator {
 
         if Task.isCancelled { return nil }
 
-        // Flush any remaining nodes in the insert buffer
+        // Flush any remaining nodes in the insert buffer (off main).
         if !insertBuffer.isEmpty {
-            tree.insertBatch(insertBuffer)
+            let toInsert = insertBuffer
             insertBuffer.removeAll(keepingCapacity: true)
+            await Task.detached(priority: .userInitiated) {
+                tree.insertBatch(toInsert)
+            }.value
         }
 
-        // Full scan completed (no threshold reached)
-        tree.aggregateSizes()
-        tree.diagnosticDump()
-        tree.finalizeBuild()
+        // Full scan completed (no threshold reached) — finalize off main.
+        await Task.detached(priority: .userInitiated) {
+            tree.aggregateSizes()
+            tree.diagnosticDump()
+            tree.finalizeBuild()
+        }.value
 
         // Save directory sizes to cache for future smart scan prioritization
         if !directorySizeMap.isEmpty {
@@ -604,7 +641,12 @@ final class ScanOrchestrator {
         let smartSettings = self.smartScanSettings
         let estimatedUsed = self.smartScanResult?.estimatedUsedSpace ?? 0
 
-        rescanTask = Task { [weak self] in
+        // Task.detached: rescanTask used to inherit MainActor from this
+        // @MainActor method, so the `for await event in stream` loop ran on
+        // the main thread between detached heavy-op hops. Detaching pushes
+        // the whole consumer loop off main; MainActor-only writes go through
+        // explicit `MainActor.run { ... }` hops.
+        rescanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
 
             let tree: FileTree? = await MainActor.run { self.deepTree }
@@ -629,26 +671,37 @@ final class ScanOrchestrator {
                 case .filesBatch(let nodes):
                     rescanBuffer.append(contentsOf: nodes)
                     if rescanBuffer.count >= 512 {
-                        tree.insertBatch(rescanBuffer)
+                        let toInsert = rescanBuffer
                         rescanBuffer.removeAll(keepingCapacity: true)
+                        // Heavy insert OFF MainActor — rescanTask inherits
+                        // @MainActor from the @MainActor class; without this
+                        // hop, every 512 nodes blocks the UI on insertBatch.
+                        await Task.detached(priority: .userInitiated) {
+                            tree.insertBatch(toInsert)
+                        }.value
                     }
 
                 case .directoryCompleted:
-                    // Flush pending nodes before updating UI
                     if !rescanBuffer.isEmpty {
-                        tree.insertBatch(rescanBuffer)
+                        let toInsert = rescanBuffer
                         rescanBuffer.removeAll(keepingCapacity: true)
+                        await Task.detached(priority: .userInitiated) {
+                            tree.insertBatch(toInsert)
+                        }.value
                     }
-                    // aggregateSizes() is O(N) — deferred to after the loop.
-                    // Use the pre-aggregation root size as an approximation for "Other" sizing.
-                    let scanned = tree.logicalSize(of: tree.rootIndex)
+                    // Approximate "Other" sizing without the O(N) aggregate.
                     let used = estimatedUsed
+                    let scanned = await Task.detached(priority: .userInitiated) {
+                        tree.logicalSize(of: tree.rootIndex)
+                    }.value
                     let newOther = max(0, Int64(used) - Int64(scanned))
-                    tree.updateVirtualOtherSize(UInt64(newOther))
+                    await Task.detached(priority: .userInitiated) {
+                        tree.updateVirtualOtherSize(UInt64(newOther))
+                    }.value
 
-                    await MainActor.run {
-                        self.onTreeUpdate?(tree)
-                    }
+                    // The detached rescan task can't touch @MainActor state
+                    // directly — hop to main for the callback dispatch.
+                    await MainActor.run { self.onTreeUpdate?(tree) }
 
                 case .smartThresholdReached(let coverage, let scannedBytes):
                     await MainActor.run {
@@ -665,20 +718,23 @@ final class ScanOrchestrator {
                 }
             }
 
-            // Flush any remaining nodes and aggregate once after all directories are processed
+            // Final flush + aggregate off MainActor.
             if !rescanBuffer.isEmpty {
-                tree.insertBatch(rescanBuffer)
+                let toInsert = rescanBuffer
                 rescanBuffer.removeAll(keepingCapacity: true)
+                await Task.detached(priority: .userInitiated) {
+                    tree.insertBatch(toInsert)
+                }.value
             }
-            tree.aggregateSizes()
-
-            // Final UI update with correct aggregated sizes
-            let finalScanned = tree.logicalSize(of: tree.rootIndex)
-            let finalOther = max(0, Int64(estimatedUsed) - Int64(finalScanned))
-            tree.updateVirtualOtherSize(UInt64(finalOther))
-            await MainActor.run {
-                self.onTreeUpdate?(tree)
-            }
+            let finalOther = await Task.detached(priority: .userInitiated) { () -> UInt64 in
+                tree.aggregateSizes()
+                let finalScanned = tree.logicalSize(of: tree.rootIndex)
+                let other = max(0, Int64(estimatedUsed) - Int64(finalScanned))
+                tree.updateVirtualOtherSize(UInt64(other))
+                return UInt64(other)
+            }.value
+            _ = finalOther
+            await MainActor.run { self.onTreeUpdate?(tree) }
         }
     }
 
@@ -720,88 +776,125 @@ final class ScanOrchestrator {
     ) async -> IncrementalRescanResult {
         let startTime = ContinuousClock.now
 
+        // Serialize against the previous rescan: cancel the handle AND
+        // await its exit before mutating the same `cachedTree`. Without the
+        // await, the new detached patcher's `applyWALPatch` + `aggregateSizes`
+        // interleaved with the cancelled-but-still-finishing previous one,
+        // producing inconsistent intermediate sums.
+        let previousRescan = rescanTask
+        previousRescan?.cancel()
+        _ = await previousRescan?.value
+
         // Capture root size before patching to measure change
         let rootSizeBefore = Int64(cachedTree.logicalSize(of: cachedTree.rootIndex))
 
-        // Set the deep tree to the cached tree so activeTree returns it
+        // Set the deep tree to the cached tree so activeTree returns it.
+        // Use `.yellow` (deep-scan-in-progress) for the duration of the
+        // patch loop — leaving phase at `.red` made `activeTree` look like
+        // a cold start and SwiftUI hid the tree until phase finally moved
+        // to `.green` at the end.
         self.deepTree = cachedTree
-        self.phase = .green
+        self.phase = .yellow
 
-        var directoriesRescanned = 0
-
-        for dirPath in dirtyPaths {
-            if Task.isCancelled { break }
-
-            // Scan this single directory with BulkDiskScanner.
-            // BulkDiskScanner performs a single-level scan (no subdirectory recursion)
-            // which is exactly what we need — each dirty path is one directory.
-            let scopedConfig = ScanConfiguration(
-                rootPath: URL(filePath: dirPath),
-                volumeId: configuration.volumeId,
-                followSymlinks: configuration.followSymlinks,
-                crossMountPoints: configuration.crossMountPoints,
-                includeHidden: configuration.includeHidden,
-                batchSize: configuration.batchSize,
-                throttleInterval: configuration.throttleInterval,
-                exclusionRules: configuration.exclusionRules
-            )
-
-            let scanner = BulkDiskScanner()
-            let stream = scanner.scan(configuration: scopedConfig)
-
-            // Collect all RawFileNodes from this directory scan
-            var rawNodes = [RawFileNode]()
-
-            for await event in stream {
+        // Heavy loop OFF MainActor — orchestrator is @MainActor so without this
+        // detach the BulkDiskScanner stream consumer, applyWALPatch, WAL append,
+        // and final aggregateSizes all run on main and freeze the UI for the
+        // entire duration of the rescan.
+        //
+        // Track the detached patch task via `rescanTask` so `cancel()` /
+        // `cancelAndWait()` can actually stop it. The prior handle has
+        // already been awaited above, so no late mutation collides here.
+        let patchTask: Task<Int, Never> = Task.detached(priority: .userInitiated) {
+            var count = 0
+            for dirPath in dirtyPaths {
                 if Task.isCancelled { break }
 
-                switch event {
-                case .fileFound(let node):
-                    rawNodes.append(node)
-                default:
-                    break
+                let scopedConfig = ScanConfiguration(
+                    rootPath: URL(filePath: dirPath),
+                    volumeId: configuration.volumeId,
+                    followSymlinks: configuration.followSymlinks,
+                    crossMountPoints: configuration.crossMountPoints,
+                    includeHidden: configuration.includeHidden,
+                    batchSize: configuration.batchSize,
+                    throttleInterval: configuration.throttleInterval,
+                    exclusionRules: configuration.exclusionRules
+                )
+
+                let scanner = BulkDiskScanner()
+                let stream = scanner.scan(configuration: scopedConfig)
+
+                var rawNodes = [RawFileNode]()
+
+                for await event in stream {
+                    if Task.isCancelled { break }
+
+                    switch event {
+                    case .fileFound(let node):
+                        rawNodes.append(node)
+                    default:
+                        break
+                    }
                 }
+
+                if Task.isCancelled { break }
+
+                let childNodes = rawNodes.filter { $0.path != dirPath }
+                let (walNodes, walStringPoolData) = Self.buildWALEntry(from: childNodes)
+
+                cachedTree.applyWALPatch(
+                    dirPath: dirPath,
+                    walNodes: walNodes,
+                    walStringPoolData: walStringPoolData
+                )
+
+                let dirPathHash = ScanCacheWAL.fnv1aHash(dirPath)
+                try? cache.wal.append(
+                    dirPathHash: dirPathHash,
+                    nodes: walNodes,
+                    stringPoolData: walStringPoolData
+                )
+
+                count += 1
             }
 
-            if Task.isCancelled { break }
+            // Re-aggregate sizes across the entire tree once after all patches.
+            cachedTree.aggregateSizes()
+            return count
+        }
+        // Hold the patch task as a `Task<Void, Never>` via a wrapper so it
+        // matches `rescanTask`'s type and can be awaited from cancelAndWait.
+        // The wrapper actively cancels the inner detached task on its own
+        // cancellation — `Task<Void, Never> { ... }` does not propagate
+        // cancellation to a detached child task, so `voidWrap.cancel()`
+        // would otherwise leave the WAL writes running after cancelAndWait.
+        let voidWrap = Task<Void, Never> {
+            await withTaskCancellationHandler {
+                _ = await patchTask.value
+            } onCancel: {
+                patchTask.cancel()
+            }
+        }
+        rescanTask = voidWrap
+        let directoriesRescanned = await patchTask.value
+        _ = await voidWrap.value
 
-            // Skip the root directory node itself — BulkDiskScanner emits the
-            // scanned directory as a node. We only want its children because
-            // applyWALPatch replaces children under dirPath.
-            let childNodes = rawNodes.filter { $0.path != dirPath }
-
-            // Convert RawFileNodes to WAL format (FileNode + StringPool)
-            let (walNodes, walStringPoolData) = Self.buildWALEntry(from: childNodes)
-
-            // Apply the patch to the cached tree
-            cachedTree.applyWALPatch(
-                dirPath: dirPath,
-                walNodes: walNodes,
-                walStringPoolData: walStringPoolData
-            )
-
-            // Write WAL entry for persistence
-            let dirPathHash = ScanCacheWAL.fnv1aHash(dirPath)
-            try? cache.wal.append(
-                dirPathHash: dirPathHash,
-                nodes: walNodes,
-                stringPoolData: walStringPoolData
-            )
-
-            directoriesRescanned += 1
+        // Now that the patch loop finished (or was cancelled), promote phase.
+        if !Task.isCancelled {
+            self.phase = .green
         }
 
-        // Re-aggregate sizes across the entire tree once after all patches
-        cachedTree.aggregateSizes()
-
-        // Calculate bytes changed
         let rootSizeAfter = Int64(cachedTree.logicalSize(of: cachedTree.rootIndex))
         let bytesChanged = rootSizeAfter - rootSizeBefore
 
-        // Fire a single UI update
-        self.onTreeUpdate?(cachedTree)
+        // Fire a single UI update on MainActor — but only if the
+        // surrounding task was not cancelled. Without this guard, an
+        // incremental rescan whose stream finished just as the user pressed
+        // Cancel would resurrect the tree in the UI after `cancel()` had
+        // already cleared it.
+        if !Task.isCancelled {
+            self.onTreeUpdate?(cachedTree)
+        }
 
-        // Calculate duration
         let elapsed = ContinuousClock.now - startTime
         let durationSeconds = Double(elapsed.components.seconds)
             + Double(elapsed.components.attoseconds) / 1e18
@@ -822,7 +915,7 @@ final class ScanOrchestrator {
     ///
     /// - Parameter rawNodes: The raw file nodes from the scanner.
     /// - Returns: A tuple of `(walNodes, stringPoolData)` suitable for WAL operations.
-    private static func buildWALEntry(
+    nonisolated private static func buildWALEntry(
         from rawNodes: [RawFileNode]
     ) -> (nodes: [FileNode], stringPoolData: Data) {
         var walPool = StringPool(initialCapacity: rawNodes.count * 20)

@@ -11,9 +11,15 @@ struct ResultStepView: View {
     let onShowArchive: () -> Void
 
     private var archiveDir: URL {
-        viewModel.archiveDir ?? FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Spacie/Archives", isDirectory: true)
+        if let dir = viewModel.archiveDir { return dir }
+        // Sandboxed / test contexts can return an empty array from
+        // FileManager standard-dir lookups. Fall back to NSHomeDirectory
+        // so the result screen never force-crashes.
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("Spacie/Archives", isDirectory: true)
     }
 
     var body: some View {

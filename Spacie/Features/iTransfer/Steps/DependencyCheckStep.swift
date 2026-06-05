@@ -53,7 +53,9 @@ struct DependencyCheckStepView: View {
                         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                         .textSelection(.enabled)
                     Button("Retry") {
-                        Task { await viewModel.checkDependencies() }
+                        Task { [weak viewModel] in
+                            await viewModel?.checkDependencies()
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -71,7 +73,15 @@ struct DependencyCheckStepView: View {
                     } else {
                         VStack(spacing: 8) {
                             Button("Install via Homebrew") {
-                                Task { await viewModel.installDependencies() }
+                                // [weak viewModel] — anonymous button Tasks
+                                // would otherwise retain the VM until brew
+                                // install finishes (multi-minute), defeating
+                                // `deinit`'s ability to cancel
+                                // `installDependenciesTask` when the sheet
+                                // is dismissed mid-install.
+                                Task { [weak viewModel] in
+                                    await viewModel?.installDependencies()
+                                }
                             }
                             .buttonStyle(.borderedProminent)
 
@@ -176,7 +186,8 @@ struct DependencyCheckStepView: View {
                 Spacer()
 
                 Button {
-                    Task {
+                    Task { [weak viewModel] in
+                        guard let viewModel else { return }
                         await viewModel.loginAppleID(email: appleIDEmail, password: appleIDPassword)
                         if viewModel.appleIDAuthenticated {
                             showAppleIDForm = false
@@ -238,7 +249,8 @@ struct DependencyCheckStepView: View {
                 Spacer()
 
                 Button {
-                    Task {
+                    Task { [weak viewModel] in
+                        guard let viewModel else { return }
                         await viewModel.loginAppleIDWithTwoFactor(
                             email: viewModel.appleIDEmailForTwoFactor,
                             password: appleIDPassword,
@@ -259,7 +271,11 @@ struct DependencyCheckStepView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(appleIDCode.isEmpty || viewModel.isAuthenticatingAppleID)
+                .disabled(
+                    appleIDCode.isEmpty
+                    || appleIDPassword.isEmpty
+                    || viewModel.isAuthenticatingAppleID
+                )
             }
         }
         .padding(14)

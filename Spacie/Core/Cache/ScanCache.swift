@@ -681,20 +681,28 @@ final class ScanCache: @unchecked Sendable {
     ///
     /// - Parameter path: The root path to monitor. Typically the same path that was scanned.
     func startMonitoring(path: String) {
-        lock.lock()
-        monitoredPath = path
-        lock.unlock()
-
-        stopMonitoring()
-
+        // Serialize the whole start-monitor sequence so two concurrent callers
+        // cannot both pass the stop-and-replace gate and leak a started
+        // FSEventsMonitor whose handle is then overwritten by the loser.
+        // Previous implementation released `lock` between writing
+        // monitoredPath, calling stopMonitoring(), and storing the new
+        // monitor — that window let the loser's started monitor become
+        // unreachable for any future stop().
         let newMonitor = FSEventsMonitor(path: path, latency: 2.0) { [weak self] events in
             self?.handleFSEvents(events)
         }
-        newMonitor.start()
 
+        let previousMonitor: FSEventsMonitor?
         lock.lock()
+        previousMonitor = monitor
         monitor = newMonitor
+        monitoredPath = path
         lock.unlock()
+
+        // Stop the displaced monitor outside the lock to avoid the
+        // FSEvents-stop callback path re-entering ScanCache state under lock.
+        previousMonitor?.stop()
+        newMonitor.start()
     }
 
     /// Stops monitoring file system changes.

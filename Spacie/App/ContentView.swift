@@ -14,6 +14,7 @@ struct ContentView: View {
     var onDismiss: (() -> Void)? = nil
 
     @State private var viewModel = AppViewModel()
+    @State private var showRescanConfirmation = false
     @Environment(VolumeManager.self) private var volumeManager
     @Environment(PermissionManager.self) private var permissionManager
     @Environment(\.openSettings) private var openSettings
@@ -317,19 +318,37 @@ struct ContentView: View {
 
     private func performGoToFolder() {
         let path = (viewModel.goToFolderPath as NSString).expandingTildeInPath
-        if let tree = viewModel.tree, let vizState = viewModel.vizState {
-            // Linear search for the node matching the requested path.
-            // FileTree does not expose a path-based index, so we iterate nodes.
-            guard tree.nodeCount > 0 else { return }
-            for i in 1...UInt32(tree.nodeCount) {
-                if tree.fullPath(of: i) == path {
-                    vizState.drillDown(to: i)
-                    break
-                }
-            }
-        }
         viewModel.showGoToFolder = false
         viewModel.goToFolderPath = ""
+
+        // Offload the linear search to a detached task — walking up to 5M
+        // nodes on MainActor previously froze the UI for multiple seconds
+        // when the user typed a path near the end of the tree.
+        guard let tree = viewModel.tree, let vizState = viewModel.vizState else { return }
+        guard tree.nodeCount > 0 else { return }
+        Task {
+            let found: UInt32? = await Task.detached(priority: .userInitiated) {
+                let totalCount = UInt32(tree.nodeCount)
+                // Check cancellation periodically (every 8K nodes) — not on
+                // every iteration to avoid the per-call overhead, but often
+                // enough that a Cancel responds within tens of milliseconds
+                // even on 5M-node trees.
+                var checkCounter: UInt32 = 0
+                for i in 1...totalCount {
+                    checkCounter &+= 1
+                    if checkCounter & 0x1FFF == 0 {
+                        if Task.isCancelled { return nil }
+                    }
+                    if tree.fullPath(of: i) == path {
+                        return i
+                    }
+                }
+                return nil
+            }.value
+            if let found {
+                vizState.drillDown(to: found)
+            }
+        }
     }
 
     // MARK: - Toolbar
@@ -372,11 +391,28 @@ struct ContentView: View {
                 }
             } else {
                 Button {
-                    Task { await viewModel.startScan() }
+                    if viewModel.tree != nil {
+                        // Already have results — confirm before discarding them.
+                        showRescanConfirmation = true
+                    } else {
+                        Task { await viewModel.startScan() }
+                    }
                 } label: {
                     Label("Scan", systemImage: "play.fill")
                 }
                 .disabled(viewModel.volume == nil)
+                .confirmationDialog(
+                    "Restart scan?",
+                    isPresented: $showRescanConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Restart from scratch", role: .destructive) {
+                        Task { await viewModel.rescan() }
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("Discard current results and rescan the disk from scratch?")
+                }
             }
         }
 

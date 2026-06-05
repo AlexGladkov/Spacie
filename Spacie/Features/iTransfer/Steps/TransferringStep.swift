@@ -37,8 +37,13 @@ struct TransferringStepView: View {
             }
 
             Button("Cancel") {
+                // Route through the VM's cancellation API and let the
+                // transferTask tail (which always runs, including on cancel)
+                // assign `state = .result` after `buildTransferResult`. The
+                // previous View-side mutation raced with the still-running
+                // tail and produced a second .result transition that
+                // sometimes overwrote `transferResult` with a torn snapshot.
                 viewModel.cancelTransfer()
-                viewModel.state = .result
             }
             .buttonStyle(.bordered)
         }

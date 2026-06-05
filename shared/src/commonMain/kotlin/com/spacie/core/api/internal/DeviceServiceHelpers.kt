@@ -18,7 +18,7 @@ internal object DeviceServiceHelpers {
     // ESC ('') is the leading byte of every CSI (control-sequence
     // introducer) ANSI escape. Strips colour codes from coloured CLI output
     // such as `ipatool`'s default text format.
-    private val ANSI_REGEX = Regex("\\[[0-9;]*[mGKHFJA-Z]")
+    private val ANSI_REGEX = Regex("\\u001B\\[[0-9;]*[mGKHFJA-Z]")
 
     /**
      * Parse a `42.5%`-style progress token out of an arbitrary line.
