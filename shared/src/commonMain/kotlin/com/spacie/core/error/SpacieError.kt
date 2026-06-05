@@ -33,9 +33,9 @@ sealed class SpacieError(override val message: String) : Exception(message) {
 
     // -- iMobileDevice: Dependencies --
 
-    @ObjCName("SpaSpacieErrorHomebrewNotInstalled")
-    data object HomebrewNotInstalled :
-        SpacieError("Homebrew is not installed. Please install Homebrew from https://brew.sh to continue.")
+    @ObjCName("SpaSpacieErrorPackageManagerNotInstalled")
+    data class PackageManagerNotInstalled(val managerName: String, val installUrl: String) :
+        SpacieError("$managerName is not installed. Please install $managerName from $installUrl to continue.")
 
     @ObjCName("SpaSpacieErrorDependencyMissing")
     data class DependencyMissing(val tools: List<String>) :

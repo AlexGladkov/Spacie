@@ -34,9 +34,21 @@ struct StorageBrowserView: View {
     /// Total used space on the scanned volume; passed to the donut chart to show coverage %.
     var volumeUsedSpace: UInt64? = nil
 
+    /// Index of the file currently selected by a single click in the left panel.
+    /// Drives the media preview slot under the donut chart for image/video files.
+    @State private var selectedFileIndex: UInt32?
+
     var body: some View {
         HStack(spacing: 0) {
-            FolderListPanel(tree: tree, state: state, sizeMode: sizeMode, scanPhase: scanPhase, treeVersion: treeVersion, onNodeTrashed: onNodeTrashed)
+            FolderListPanel(
+                tree: tree,
+                state: state,
+                sizeMode: sizeMode,
+                scanPhase: scanPhase,
+                treeVersion: treeVersion,
+                onNodeTrashed: onNodeTrashed,
+                selectedFileIndex: $selectedFileIndex
+            )
 
             Divider()
 
@@ -46,11 +58,16 @@ struct StorageBrowserView: View {
                 sizeMode: sizeMode,
                 useEntryCount: state.useEntryCount,
                 treeVersion: treeVersion,
-                volumeUsedSpace: volumeUsedSpace
+                volumeUsedSpace: volumeUsedSpace,
+                previewIndex: selectedFileIndex
             )
             .frame(width: 320)
         }
         .background(Color(nsColor: .controlBackgroundColor))
+        // Drilldown changes root → clear the preview pinned to the previous folder.
+        .onChange(of: state.currentRootIndex) { _, _ in
+            selectedFileIndex = nil
+        }
     }
 }
 
@@ -64,6 +81,7 @@ private struct FolderListPanel: View {
     var scanPhase: ScanPhase = .red
     var treeVersion: Int = 0
     var onNodeTrashed: ((UInt32) -> Void)? = nil
+    @Binding var selectedFileIndex: UInt32?
 
     @State private var trashTargetIndex: UInt32?
     @State private var showTrashConfirmation = false
@@ -100,8 +118,19 @@ private struct FolderListPanel: View {
                     let node = tree[index]
                     if node.isDirectory && !node.isVirtual {
                         state.drillDown(to: index)
+                    } else if !node.isVirtual {
+                        // Single-click on a real file pins the row as the preview
+                        // target — FileTypePanel renders a thumbnail under the
+                        // donut chart so the user can confirm visually before
+                        // invoking Move to Trash.
+                        selectedFileIndex = (selectedFileIndex == index) ? nil : index
                     }
                 }
+                .listRowBackground(
+                    selectedFileIndex == index
+                        ? Color.accentColor.opacity(0.18)
+                        : Color.clear
+                )
                 .contextMenu {
                     Button("Reveal in Finder") {
                         revealInFinder(index: index)
@@ -112,8 +141,15 @@ private struct FolderListPanel: View {
                         NSPasteboard.general.setString(path, forType: .string)
                     }
 
+                    // Trash action is available whenever the node represents a
+                    // real on-disk entry. The previous gate also required
+                    // scanPhase to be .green/.smartGreen, which silently hid
+                    // the action when the user was browsing cached data while a
+                    // background rescan held the phase at .yellow. The follow-up
+                    // confirmation alert is the actual safety net, so the phase
+                    // check is unnecessary.
                     let node = tree[index]
-                    if !node.isVirtual && (scanPhase == .green || scanPhase == .smartGreen) {
+                    if !node.isVirtual {
                         Divider()
                         Button("Move to Trash", role: .destructive) {
                             trashTargetIndex = index
@@ -147,25 +183,31 @@ private struct FolderListPanel: View {
             }
         }
         .task(id: dataKey) {
-            children = sortedChildren()
-            parentValue = computeParentValue()
-        }
-    }
-
-    private func sortedChildren() -> [UInt32] {
-        if useEntryCount {
-            return tree.children(of: state.currentRootIndex)
-                .sorted { tree.entryCount(of: $0) > tree.entryCount(of: $1) }
-        } else {
-            return tree.sortedChildren(of: state.currentRootIndex, by: .sizeDescending)
-        }
-    }
-
-    private func computeParentValue() -> UInt64 {
-        if useEntryCount {
-            return UInt64(tree.entryCount(of: state.currentRootIndex))
-        } else {
-            return tree.size(of: state.currentRootIndex, mode: sizeMode)
+            // Offload children sort + parent-value calc: both walk arbitrary
+            // numbers of nodes (tens of thousands on big dirs) and previously
+            // ran inline on MainActor, freezing the folder list when entering
+            // a wide directory.
+            let capturedTree = tree
+            let capturedRoot = state.currentRootIndex
+            let capturedUseEntryCount = useEntryCount
+            let capturedSizeMode = sizeMode
+            let result = await Task.detached(priority: .userInitiated) { () -> (children: [UInt32], parentValue: UInt64) in
+                let sortedKids: [UInt32]
+                let parentVal: UInt64
+                if capturedUseEntryCount {
+                    sortedKids = capturedTree.children(of: capturedRoot)
+                        .sorted { capturedTree.entryCount(of: $0) > capturedTree.entryCount(of: $1) }
+                    parentVal = UInt64(capturedTree.entryCount(of: capturedRoot))
+                } else {
+                    sortedKids = capturedTree.sortedChildren(of: capturedRoot, by: .sizeDescending)
+                    parentVal = capturedTree.size(of: capturedRoot, mode: capturedSizeMode)
+                }
+                return (sortedKids, parentVal)
+            }.value
+            if !Task.isCancelled {
+                children = result.children
+                parentValue = result.parentValue
+            }
         }
     }
 
@@ -258,31 +300,63 @@ private struct FileTypePanel: View {
     var treeVersion: Int = 0
     /// Total used space on the volume — shown in donut center as coverage % when at tree root.
     var volumeUsedSpace: UInt64? = nil
+    /// File node currently pinned for preview by a single-click in the folder list.
+    var previewIndex: UInt32? = nil
 
     @State private var distribution: [TypeEntry] = []
+    @State private var isComputingDistribution: Bool = false
     @State private var showCoveragePopover = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            if useEntryCount {
-                yellowPhasePlaceholder
-            } else if distribution.isEmpty {
-                emptyPlaceholder
-            } else {
-                donutChart
-                    .padding(20)
+        ScrollView {
+            VStack(spacing: 0) {
+                if useEntryCount {
+                    yellowPhasePlaceholder
+                } else if isComputingDistribution {
+                    loadingPlaceholder
+                } else if distribution.isEmpty {
+                    emptyPlaceholder
+                } else {
+                    donutChart
+                        .padding(20)
 
-                Divider()
+                    Divider()
 
-                legend
+                    legend
+
+                    if let previewView = mediaPreviewSection {
+                        Divider()
+                        previewView
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                    }
+                }
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .task(id: distributionTaskKey) {
-            if !useEntryCount {
-                distribution = buildDistribution()
-            } else {
+            if useEntryCount {
                 distribution = []
+                isComputingDistribution = false
+                return
+            }
+            isComputingDistribution = true
+            defer { isComputingDistribution = false }
+            // Offload to a background task — buildDistribution walks every node
+            // in the subtree (potentially millions), which freezes the main thread
+            // when run inline in a MainActor-isolated `.task`.
+            let capturedTree = tree
+            let capturedRoot = rootIndex
+            let capturedMode = sizeMode
+            let computed = await Task.detached(priority: .userInitiated) {
+                Self.computeDistribution(
+                    tree: capturedTree,
+                    rootIndex: capturedRoot,
+                    sizeMode: capturedMode
+                )
+            }.value
+            if !Task.isCancelled {
+                distribution = computed
             }
         }
     }
@@ -292,6 +366,31 @@ private struct FileTypePanel: View {
     }
 
     // MARK: - Donut Chart
+
+    // MARK: - Media preview slot
+
+    /// Returns a `FilePreviewView` for the currently pinned file when it is an
+    /// image or video; otherwise returns `nil` so the chart layout is unchanged.
+    private var mediaPreviewSection: FilePreviewView? {
+        guard let idx = previewIndex, idx < tree.nodeCount else { return nil }
+        let node = tree[idx]
+        guard !node.isDirectory, !node.isVirtual else { return nil }
+
+        let kind: FilePreviewView.Kind
+        switch node.fileType {
+        case .image: kind = .image
+        case .video: kind = .video
+        default: return nil
+        }
+
+        let path = tree.fullPath(of: idx)
+        return FilePreviewView(
+            fileURL: URL(fileURLWithPath: path),
+            fileName: tree.name(of: idx),
+            fileSize: tree.size(of: idx, mode: sizeMode),
+            kind: kind
+        )
+    }
 
     private var donutChart: some View {
         GeometryReader { geo in
@@ -401,10 +500,10 @@ private struct FileTypePanel: View {
     private var yellowPhasePlaceholder: some View {
         VStack(spacing: 12) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(Color.yellow)
-                    .frame(width: 8, height: 8)
-                Text("Approximate Data")
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                Text("Deep scan in progress")
                     .font(.headline)
             }
             Text("File type distribution will appear when deep scan completes.")
@@ -424,9 +523,36 @@ private struct FileTypePanel: View {
         )
     }
 
+    /// Shown while the detached `buildDistribution` walk is in flight.
+    /// Walks up to millions of nodes; previously this slot rendered the
+    /// "No file data" empty state and looked like a failed scan.
+    private var loadingPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.large)
+            Text("Computing file types…")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("Walking the subtree to bucket files by type.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
     // MARK: - Distribution Computation
 
-    private func buildDistribution() -> [TypeEntry] {
+    /// Nonisolated traversal used by the `.task` modifier from a background
+     /// detached task. Operates only on the passed-in `FileTree` (which provides
+     /// its own internal locking) — does not touch any View state.
+    nonisolated static func computeDistribution(
+        tree: FileTree,
+        rootIndex: UInt32,
+        sizeMode: SizeMode
+    ) -> [TypeEntry] {
         var buckets = [UInt64](repeating: 0, count: FileType.allCases.count)
 
         var stack: [UInt32] = tree.children(of: rootIndex)

@@ -9,6 +9,8 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.Foundation.NSError
 import platform.Foundation.NSFileManager
@@ -59,35 +61,66 @@ actual class TrashService actual constructor() {
     }
 
     actual suspend fun moveToTrashBatch(paths: List<String>): List<TrashItemResult> {
-        return paths.map { path ->
+        // Use a plain `for` loop so we can call `ensureActive()` between
+        // items — `paths.map { … }` swallowed cancellation between
+        // iterations because `moveToTrash` only checks on its
+        // suspendCancellableCoroutine boundary, not in between.
+        val results = ArrayList<TrashItemResult>(paths.size)
+        for (path in paths) {
+            currentCoroutineContext().ensureActive()
             try {
                 val trashPath = moveToTrash(path)
-                TrashItemResult(
-                    originalPath = path,
-                    success = true,
-                    trashPath = trashPath,
-                    errorMessage = null
+                results.add(
+                    TrashItemResult(
+                        originalPath = path,
+                        success = true,
+                        trashPath = trashPath,
+                        errorMessage = null
+                    )
                 )
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                TrashItemResult(
-                    originalPath = path,
-                    success = false,
-                    trashPath = null,
-                    errorMessage = e.message
+                results.add(
+                    TrashItemResult(
+                        originalPath = path,
+                        success = false,
+                        trashPath = null,
+                        errorMessage = e.message
+                    )
                 )
             }
         }
+        return results
     }
 
     actual suspend fun trashSize(): Long {
         return suspendCancellableCoroutine { cont ->
+            // Atomic resume-claim. invokeOnCancellation and the GCD
+            // dispatch block race for the same `resumed` flag; the loser
+            // skips its resume so we never call cont.resume after
+            // cancellation (latent foot-gun in K/N runtime even though
+            // current behaviour is a silent no-op).
+            val resumed = kotlin.concurrent.AtomicInt(0)
+            val cancelled = kotlin.concurrent.AtomicInt(0)
+            cont.invokeOnCancellation {
+                cancelled.value = 1
+                // Don't claim the resume slot — the dispatch block
+                // checks `cancelled` between iterations and returns
+                // without resuming. invokeOnCancellation runs after
+                // the continuation is already cancelled, so attempting
+                // to resume here would itself be a no-op.
+            }
+
             val queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND.toLong(), 0u)
             dispatch_async(queue) {
                 val trashPath = "${NSHomeDirectory()}/.Trash"
                 val fm = NSFileManager.defaultManager
 
                 if (!fm.fileExistsAtPath(trashPath)) {
-                    cont.resume(0L)
+                    if (cancelled.value == 0 && resumed.compareAndSet(0, 1)) {
+                        cont.resume(0L)
+                    }
                     return@dispatch_async
                 }
 
@@ -95,6 +128,7 @@ actual class TrashService actual constructor() {
                 val enumerator = fm.enumeratorAtPath(trashPath)
                 if (enumerator != null) {
                     while (true) {
+                        if (cancelled.value != 0) return@dispatch_async
                         val item = enumerator.nextObject() as? String ?: break
                         val fullPath = "$trashPath/$item"
                         val attrs = fm.attributesOfItemAtPath(fullPath, error = null)
@@ -105,7 +139,9 @@ actual class TrashService actual constructor() {
                     }
                 }
 
-                cont.resume(totalSize)
+                if (cancelled.value == 0 && resumed.compareAndSet(0, 1)) {
+                    cont.resume(totalSize)
+                }
             }
         }
     }

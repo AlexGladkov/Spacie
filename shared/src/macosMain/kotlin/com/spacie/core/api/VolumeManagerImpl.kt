@@ -32,7 +32,12 @@ import platform.Foundation.NSURLVolumeNameKey
 import platform.Foundation.NSURLVolumeTotalCapacityKey
 import platform.Foundation.NSURLVolumeUUIDStringKey
 import platform.Foundation.NSVolumeEnumerationSkipHiddenVolumes
+import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.NSObjectProtocol
+import platform.darwin.dispatch_semaphore_create
+import platform.darwin.dispatch_semaphore_signal
+import platform.darwin.dispatch_semaphore_t
+import platform.darwin.dispatch_semaphore_wait
 import kotlin.experimental.ExperimentalObjCName
 import kotlin.native.ObjCName
 
@@ -43,6 +48,15 @@ class VolumeManagerImpl : VolumeManagerApi {
     private val _volumes = MutableStateFlow<List<VolumeInfo>>(emptyList())
     override val volumes: CommonStateFlow<List<VolumeInfo>> = _volumes.asCommonStateFlow()
 
+    // Mutated from start/stopMonitoring; read from notification callbacks.
+    // Serializes access so a stopMonitoring() concurrent with refresh() from
+    // the NSWorkspace notification queue can never observe a torn state.
+    // checkNotNull: dispatch_semaphore_create only returns nil under extreme
+    // OOM. Passing a null semaphore to dispatch_semaphore_wait crashes in
+    // native code with no catchable exception — surface the failure here as
+    // a Kotlin error during init instead.
+    private val observerLock: dispatch_semaphore_t =
+        checkNotNull(dispatch_semaphore_create(1)) { "dispatch_semaphore_create failed (OOM)" }
     private var mountObserver: NSObjectProtocol? = null
     private var unmountObserver: NSObjectProtocol? = null
 
@@ -86,26 +100,44 @@ class VolumeManagerImpl : VolumeManagerApi {
         stopMonitoring()
         val center = NSWorkspace.sharedWorkspace.notificationCenter
 
-        mountObserver = center.addObserverForName(
+        val newMount = center.addObserverForName(
             name = NSWorkspaceDidMountNotification,
             `object` = null,
             queue = NSOperationQueue.mainQueue,
             usingBlock = { _ -> refresh() }
         )
-        unmountObserver = center.addObserverForName(
+        val newUnmount = center.addObserverForName(
             name = NSWorkspaceDidUnmountNotification,
             `object` = null,
             queue = NSOperationQueue.mainQueue,
             usingBlock = { _ -> refresh() }
         )
+        withObserverLock {
+            mountObserver = newMount
+            unmountObserver = newUnmount
+        }
     }
 
     override fun stopMonitoring() {
+        val (toRemoveMount, toRemoveUnmount) = withObserverLock {
+            val m = mountObserver
+            val u = unmountObserver
+            mountObserver = null
+            unmountObserver = null
+            m to u
+        }
         val center = NSWorkspace.sharedWorkspace.notificationCenter
-        mountObserver?.let { center.removeObserver(it) }
-        unmountObserver?.let { center.removeObserver(it) }
-        mountObserver = null
-        unmountObserver = null
+        toRemoveMount?.let { center.removeObserver(it) }
+        toRemoveUnmount?.let { center.removeObserver(it) }
+    }
+
+    private inline fun <T> withObserverLock(block: () -> T): T {
+        dispatch_semaphore_wait(observerLock, DISPATCH_TIME_FOREVER)
+        return try {
+            block()
+        } finally {
+            dispatch_semaphore_signal(observerLock)
+        }
     }
 
     // -- Private helpers --

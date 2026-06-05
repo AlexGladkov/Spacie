@@ -1,16 +1,13 @@
 import Foundation
+import SpacieKit
 
 // MARK: - TrashError
 
 /// Errors specific to trash operations in Spacie.
 enum TrashError: LocalizedError, Sendable {
-    /// The file at the given path is protected by the blocklist and cannot be deleted.
     case blocked(path: String, reason: String)
-    /// The file requires user confirmation before deletion.
     case requiresConfirmation(path: String, reason: String)
-    /// The file was not found at the expected path.
     case fileNotFound(path: String)
-    /// An underlying file system error occurred.
     case fileSystemError(path: String, underlying: String)
 
     var errorDescription: String? {
@@ -31,52 +28,42 @@ enum TrashError: LocalizedError, Sendable {
 
 /// The outcome of attempting to move a single file or directory to Trash.
 struct TrashResult: Sendable {
-    /// The original URL of the item.
     let url: URL
-    /// Whether the move to Trash succeeded.
     let success: Bool
-    /// The error that occurred, if any.
     let error: TrashError?
-    /// The URL in the Trash where the item was moved, if successful.
     let trashURL: URL?
+}
+
+// MARK: - TrashManaging
+
+/// Abstraction over move-to-trash behaviour so views/tests can mock deletion.
+///
+/// Methods are `@MainActor` individually (not the protocol) to keep
+/// `EnvironmentKey.Value` conformance buildable.
+protocol TrashManaging: Sendable {
+    @MainActor func moveToTrash(url: URL) async throws -> URL
+    @MainActor func moveToTrash(urls: [URL]) async throws -> [TrashResult]
+    @MainActor func trashSize() async -> UInt64
 }
 
 // MARK: - TrashManager
 
-/// Manages safe deletion of files by moving them to the macOS Trash.
-///
-/// Before each deletion, the ``BlocklistManager`` is consulted to ensure
-/// the target path is not protected (SIP, critical user paths, user blocklist)
-/// or flagged for warning. Files that are blocked will not be moved.
-///
-/// ## Safety
-/// - Uses `FileManager.trashItem(at:resultingItemURL:)` exclusively.
-/// - Never performs permanent deletion.
-/// - Never requests elevated privileges.
-///
-/// ## Usage
-/// ```swift
-/// let manager = TrashManager()
-/// let trashURL = try await manager.moveToTrash(url: fileURL)
-/// ```
-struct TrashManager: Sendable {
+/// Default implementation. Blocklist checks remain in Swift; KMP performs the
+/// actual trash operation.
+@MainActor
+struct TrashManager: TrashManaging {
+
+    private let kmpTrash: SpaTrashService
+
+    init(kmpTrash: SpaTrashService = SpaSpacieFactory.shared.createTrashService()) {
+        self.kmpTrash = kmpTrash
+    }
 
     // MARK: - Single Item
 
-    /// Moves a single file or directory to the macOS Trash.
-    ///
-    /// Checks the ``BlocklistManager`` before proceeding. If the path is
-    /// blocked, throws ``TrashError/blocked``. If it requires a warning,
-    /// throws ``TrashError/requiresConfirmation`` so the UI layer can
-    /// present a confirmation dialog before retrying.
-    ///
-    /// - Parameter url: The file URL to move to Trash.
-    /// - Returns: The URL of the item in the Trash after the move.
-    /// - Throws: ``TrashError`` if the operation is not permitted or fails.
     func moveToTrash(url: URL) async throws -> URL {
         let path = url.path
 
-        // Pre-check blocklist
         let permission = BlocklistManager.checkPermission(for: path)
         switch permission {
         case .blocked(let reason):
@@ -87,42 +74,20 @@ struct TrashManager: Sendable {
             break
         }
 
-        // Verify file exists
         guard FileManager.default.fileExists(atPath: path) else {
             throw TrashError.fileNotFound(path: path)
         }
 
-        // Perform the move on a background thread to avoid blocking the caller.
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var resultURL: NSURL?
-                do {
-                    try FileManager.default.trashItem(at: url, resultingItemURL: &resultURL)
-                    if let trashURL = resultURL as URL? {
-                        continuation.resume(returning: trashURL)
-                    } else {
-                        continuation.resume(returning: url)
-                    }
-                } catch {
-                    continuation.resume(throwing: TrashError.fileSystemError(
-                        path: path,
-                        underlying: error.localizedDescription
-                    ))
-                }
-            }
+        do {
+            let trashPath = try await kmpTrash.moveToTrash(path: path)
+            return URL(fileURLWithPath: trashPath)
+        } catch {
+            throw TrashError.fileSystemError(path: path, underlying: error.localizedDescription)
         }
     }
 
     // MARK: - Batch
 
-    /// Moves multiple files or directories to the macOS Trash.
-    ///
-    /// Each item is processed independently. Items that are blocked or
-    /// fail will have their error recorded in the corresponding
-    /// ``TrashResult`` without preventing other items from being processed.
-    ///
-    /// - Parameter urls: The file URLs to move to Trash.
-    /// - Returns: An array of ``TrashResult`` in the same order as the input.
     func moveToTrash(urls: [URL]) async throws -> [TrashResult] {
         var results: [TrashResult] = []
         results.reserveCapacity(urls.count)
@@ -130,19 +95,9 @@ struct TrashManager: Sendable {
         for url in urls {
             do {
                 let trashURL = try await moveToTrash(url: url)
-                results.append(TrashResult(
-                    url: url,
-                    success: true,
-                    error: nil,
-                    trashURL: trashURL
-                ))
+                results.append(TrashResult(url: url, success: true, error: nil, trashURL: trashURL))
             } catch let trashError as TrashError {
-                results.append(TrashResult(
-                    url: url,
-                    success: false,
-                    error: trashError,
-                    trashURL: nil
-                ))
+                results.append(TrashResult(url: url, success: false, error: trashError, trashURL: nil))
             } catch {
                 results.append(TrashResult(
                     url: url,
@@ -158,30 +113,48 @@ struct TrashManager: Sendable {
 
     // MARK: - Trash Size
 
-    /// Calculates the total size of the current user's Trash directory.
-    ///
-    /// Enumerates `~/.Trash/` recursively and sums allocated file sizes.
-    /// Returns 0 if the Trash directory does not exist or cannot be read.
-    ///
-    /// - Returns: The total size in bytes of all items in Trash.
     func trashSize() async -> UInt64 {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let trashURL = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".Trash")
-
-                guard FileManager.default.fileExists(atPath: trashURL.path) else {
-                    continuation.resume(returning: 0)
-                    return
-                }
-
-                do {
-                    let size = try FileManager.default.allocatedSizeOfDirectory(at: trashURL)
-                    continuation.resume(returning: size)
-                } catch {
-                    continuation.resume(returning: 0)
-                }
-            }
+        do {
+            let result = try await kmpTrash.trashSize()
+            let size = (result as NSNumber).int64Value
+            return size >= 0 ? UInt64(size) : 0
+        } catch {
+            return 0
         }
     }
 }
+
+// MARK: - MockTrashManager
+
+#if DEBUG
+@MainActor
+final class MockTrashManager: TrashManaging {
+
+    var trashedURLs: [URL] = []
+    var totalSize: UInt64 = 0
+    var failureForPath: ((String) -> TrashError?)?
+
+    func moveToTrash(url: URL) async throws -> URL {
+        if let error = failureForPath?(url.path) { throw error }
+        trashedURLs.append(url)
+        return url.appendingPathExtension("trashed")
+    }
+
+    func moveToTrash(urls: [URL]) async throws -> [TrashResult] {
+        urls.map { url in
+            if let error = failureForPath?(url.path) {
+                return TrashResult(url: url, success: false, error: error, trashURL: nil)
+            }
+            trashedURLs.append(url)
+            return TrashResult(
+                url: url,
+                success: true,
+                error: nil,
+                trashURL: url.appendingPathExtension("trashed")
+            )
+        }
+    }
+
+    func trashSize() async -> UInt64 { totalSize }
+}
+#endif

@@ -10,8 +10,10 @@ import com.spacie.core.model.TransferItem
 import com.spacie.core.model.TransferPhase
 import com.spacie.core.model.TransferProgress
 import com.spacie.core.model.TrustState
+import com.spacie.core.api.internal.DeviceServiceHelpers
 import com.spacie.core.platform.ChocolateyResolver
 import com.spacie.core.platform.ProcessRunner
+import com.spacie.core.platform.ProcessRunnerApi
 import com.spacie.core.platform.pathExists
 import com.spacie.core.validation.InputValidator
 import kotlinx.coroutines.CancellationException
@@ -34,10 +36,16 @@ import javax.xml.parsers.DocumentBuilderFactory
  * Uses [ChocolateyResolver] for tool discovery and [ProcessRunner] for
  * invoking libimobiledevice / ipatool CLI tools.
  */
-class WindowsDeviceServiceImpl : DeviceServiceApi {
+class WindowsDeviceServiceImpl(
+    private val runner: ProcessRunnerApi = ProcessRunner(),
+    private val resolver: ChocolateyResolver = ChocolateyResolver()
+) : DeviceServiceApi {
 
-    private val runner = ProcessRunner()
-    private val resolver = ChocolateyResolver()
+    /**
+     * Bound to in-flight observation / transfer coroutines (see [cancel]). The
+     * previous version allocated this scope but never `launch`-ed work into it,
+     * so cancellation was a silent no-op.
+     */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // -- Dependencies --
@@ -46,7 +54,7 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
 
     override suspend fun installDependencies(onLine: (String) -> Unit) {
         val chocoPath = resolver.resolve("choco")
-            ?: throw SpacieError.HomebrewNotInstalled
+            ?: throw SpacieError.PackageManagerNotInstalled("Chocolatey", "https://chocolatey.org/install")
 
         val result = runner.runWithLineOutput(
             executablePath = chocoPath,
@@ -169,6 +177,21 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         }
     }
 
+    /**
+     * SECURITY NOTE (Sprint 1, 2026-06-04):
+     * `ipatool auth login` requires `-p PASSWORD` as a CLI argument.
+     * On Windows the full command line is visible via WMI `Win32_Process`, Task Manager,
+     * and Windows Event Log (Event ID 4688 if process auditing is enabled).
+     * This is a known limitation of ipatool — see [DeviceServiceImpl] macOS counterpart
+     * for full remediation plan.
+     *
+     * Mitigations applied:
+     *  - Password redacted from any error output via [redactSecret].
+     *  - Password never logged.
+     *  - Child process forcibly terminated on cancellation/timeout (ProcessRunner).
+     *  - Process auditing increases risk; deployment should advise users to disable
+     *    Event ID 4688 logging if processing sensitive credentials.
+     */
     override suspend fun loginAppleID(email: String, password: String, authCode: String?) {
         val paths = requireToolPaths()
         val ipatool = paths["ipatool"]
@@ -183,15 +206,21 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         if (result.exitCode != 0) {
             val raw = (String(result.stdout, Charsets.UTF_8) + "\n" +
                     String(result.stderr, Charsets.UTF_8)).trim()
+            val cleaned = redactSecret(raw, password)
             val twoFaKeywords = listOf(
                 "two-factor", "2fa", "auth-code",
                 "authentication code", "verification code"
             )
-            if (authCode == null && twoFaKeywords.any { raw.lowercase().contains(it) }) {
+            if (authCode == null && twoFaKeywords.any { cleaned.lowercase().contains(it) }) {
                 throw SpacieError.TwoFactorRequired
             }
-            throw SpacieError.AuthFailed(raw.ifEmpty { "Authentication failed" })
+            throw SpacieError.AuthFailed(cleaned.ifEmpty { "Authentication failed" })
         }
+    }
+
+    private fun redactSecret(text: String, secret: String): String {
+        if (secret.isEmpty()) return text
+        return text.replace(secret, "***")
     }
 
     // -- IPA Extraction --
@@ -389,6 +418,13 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         }.asCommonFlow()
     }
 
+    /**
+     * Cancels the service-owned scope. The cold `flow {}` blocks returned by
+     * [observeDevices] / [transferApps] are stopped by their **collector's**
+     * cancellation, not this scope — cancel the coroutine that collects the flow
+     * to stop a transfer. This call covers any background work launched
+     * internally by future versions of the service.
+     */
     override fun cancel() {
         scope.cancel()
     }
@@ -399,7 +435,9 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         return when (val status = resolver.resolveAll()) {
             is DependencyStatus.Ready -> status.toolPaths
             is DependencyStatus.Missing -> throw SpacieError.DependencyMissing(status.tools)
-            is DependencyStatus.HomebrewMissing -> throw SpacieError.HomebrewNotInstalled
+            is DependencyStatus.PackageManagerMissing -> throw SpacieError.PackageManagerNotInstalled(
+                status.managerName, status.installUrl
+            )
         }
     }
 
@@ -417,15 +455,7 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         )
     }
 
-    private fun parseKeyValueOutput(output: String): Map<String, String> {
-        val result = mutableMapOf<String, String>()
-        for (line in output.split("\n")) {
-            val idx = line.indexOf(':')
-            if (idx <= 0) continue
-            result[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
-        }
-        return result
-    }
+    private fun parseKeyValueOutput(output: String): Map<String, String> = DeviceServiceHelpers.parseKeyValueOutput(output)
 
     private fun parseAppListXml(data: ByteArray): List<AppInfo> {
         if (data.isEmpty()) return emptyList()
@@ -483,9 +513,5 @@ class WindowsDeviceServiceImpl : DeviceServiceApi {
         }
     }
 
-    private fun parseProgressLine(line: String): Double? {
-        val match = Regex("""(\d+(?:\.\d+)?)\s*%""").find(line) ?: return null
-        val percent = match.groupValues[1].toDoubleOrNull() ?: return null
-        return minOf(1.0, percent / 100.0)
-    }
+    private fun parseProgressLine(line: String): Double? = DeviceServiceHelpers.parseProgressLine(line)
 }

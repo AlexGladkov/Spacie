@@ -1,0 +1,13 @@
+headers = util.h
+package = utilpty
+linkerOpts.osx = -lutil
+
+---
+
+#include <util.h>
+
+// Inline wrapper exposes a clean 2-arg forkpty that cinterop can bind to
+// without nullability-annotation interference from system headers.
+static inline int kn_forkpty(int *amaster, char *name) {
+    return forkpty(amaster, name, 0, 0);
+}

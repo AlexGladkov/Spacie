@@ -158,10 +158,14 @@ final class FSEventsMonitor: @unchecked Sendable {
 
         let pathsToWatch = [monitoredPath] as CFArray
 
-        // We use an Unmanaged reference to self to bridge into the C callback.
+        // Unmanaged.passRetained adds +1 to self; the matching release happens
+        // either in stop() (via takeRetainedValue on context.info) or — if
+        // FSEventStreamCreate fails below — must be released here, otherwise
+        // the monitor (and the ScanCache that owns it) leak forever.
+        let retainedSelf = Unmanaged.passRetained(self)
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passRetained(self).toOpaque(),
+            info: retainedSelf.toOpaque(),
             retain: nil,
             release: nil,
             copyDescription: nil
@@ -181,6 +185,9 @@ final class FSEventsMonitor: @unchecked Sendable {
             latency,
             flags
         ) else {
+            // Balance the passRetained above so we don't leak self when
+            // FSEvents stream creation fails.
+            retainedSelf.release()
             return
         }
 
@@ -194,22 +201,31 @@ final class FSEventsMonitor: @unchecked Sendable {
     ///
     /// Safe to call even if not currently running.
     func stop() {
+        // Capture the FSEvents stream under the lock, then drop the lock
+        // BEFORE doing FSEventStreamRelease + Unmanaged.release. The release
+        // can decrement self's retain count to zero, triggering this object's
+        // deinit synchronously; if deinit ever needs to touch state covered by
+        // stateLock (current or future), we'd deadlock by re-entering the
+        // unfair lock from the same thread.
         stateLock.lock()
-        defer { stateLock.unlock() }
-
-        guard isRunning, let eventStream = stream else { return }
+        guard isRunning, let eventStream = stream else {
+            stateLock.unlock()
+            return
+        }
+        stream = nil
+        isRunning = false
+        stateLock.unlock()
 
         FSEventStreamStop(eventStream)
         FSEventStreamInvalidate(eventStream)
         FSEventStreamRelease(eventStream)
 
-        // Balance the passRetained from start()
+        // Balance the passRetained from start(). Performed outside the lock
+        // so a deinit triggered by the release can take any lock it wants
+        // without re-entering ours.
         Unmanaged<FSEventsMonitor>.fromOpaque(
             Unmanaged.passUnretained(self).toOpaque()
         ).release()
-
-        stream = nil
-        isRunning = false
     }
 
     /// Requests that the FSEvents stream flush any pending events immediately.

@@ -16,6 +16,14 @@ kotlin {
             isStatic = true
             xcf.add(this)
         }
+        compilations.getByName("main") {
+            cinterops {
+                val utilpty by creating {
+                    defFile(project.file("src/nativeInterop/cinterop/utilpty.def"))
+                    packageName("utilpty")
+                }
+            }
+        }
     }
 
     macosX64 {
@@ -23,6 +31,14 @@ kotlin {
             baseName = "SpacieKit"
             isStatic = true
             xcf.add(this)
+        }
+        compilations.getByName("main") {
+            cinterops {
+                val utilpty by creating {
+                    defFile(project.file("src/nativeInterop/cinterop/utilpty.def"))
+                    packageName("utilpty")
+                }
+            }
         }
     }
     jvm()
@@ -38,6 +54,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+            implementation("org.jetbrains.kotlinx:atomicfu:0.23.1")
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

@@ -177,6 +177,29 @@ struct ArchivedApp: Identifiable, Sendable {
     var bundleID: String { metadata.bundleID }
 }
 
+#if DEBUG
+extension ArchivedApp {
+    /// Synthetic fixture used by SwiftUI previews.
+    static var previewSample: ArchivedApp {
+        ArchivedApp(
+            id: "preview",
+            metadata: ArchivedAppMetadata(
+                bundleID: "ru.tinkoff.bank",
+                displayName: "Т-Банк",
+                version: "6.12.0",
+                shortVersion: "6.12",
+                ipaSize: 47_185_920,
+                archivedAt: Date(),
+                sourceDeviceName: "iPhone Artyom",
+                sourceDeviceVersion: "18.3.1"
+            ),
+            ipaURL: URL(fileURLWithPath: "/tmp/preview/Tinkoff.ipa"),
+            iconData: nil
+        )
+    }
+}
+#endif
+
 // MARK: - TransferPhase
 
 /// Discrete phases of a single app transfer operation.
@@ -380,6 +403,14 @@ enum iMobileDeviceError: Error, LocalizedError, Sendable {
     /// An operation requires Apple ID authentication but ipatool is not signed in.
     case notAuthenticated
 
+    // MARK: Validation
+
+    /// The UDID string is malformed.
+    case invalidUDID(udid: String)
+
+    /// The bundle identifier is malformed.
+    case invalidBundleID(bundleID: String)
+
     // MARK: Archive
 
     /// Not enough free disk space to write the archive.
@@ -447,6 +478,12 @@ enum iMobileDeviceError: Error, LocalizedError, Sendable {
 
         case .notAuthenticated:
             return "Not signed in with Apple ID. Please sign in before downloading IPAs."
+
+        case .invalidUDID(let udid):
+            return "Invalid UDID: \"\(udid)\"."
+
+        case .invalidBundleID(let bundleID):
+            return "Invalid bundle ID: \"\(bundleID)\"."
         }
     }
 }

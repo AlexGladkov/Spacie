@@ -1,24 +1,21 @@
 import Foundation
+import SpacieKit
 
 // MARK: - ScanExclusionRules
 
 /// Immutable set of rules for excluding directories during a file system scan.
 ///
 /// Two kinds of checks are performed:
-/// 1. **Basename lookup** — O(1) `Set` membership test against known directory names
-///    (e.g. `node_modules`, `.git`, `DerivedData`).
-/// 2. **Path prefix match** — linear scan over a small array of absolute path prefixes
-///    (e.g. `~/Library/Caches`).
+/// 1. **Basename lookup** — O(1) `Set` membership test against known directory names.
+/// 2. **Path prefix match** — linear scan over a small array of absolute path prefixes.
 ///
-/// User-defined exclusions from `~/.spacie/scan-exclusions.txt` are merged into
-/// whichever category they match (basename or prefix).
+/// User-defined exclusions from `~/.spacie/scan-exclusions.txt` are merged at load time.
 struct ScanExclusionRules: Sendable {
 
     let excludedBasenames: Set<String>
     let excludedPathPrefixes: [String]
 
     /// Pre-computed `excludedPathPrefixes[i] + "/"` strings.
-    /// Avoids creating a temporary string on every `shouldExclude` call (millions of times).
     private let _prefixesWithSlash: [String]
 
     init(excludedBasenames: Set<String>, excludedPathPrefixes: [String]) {
@@ -29,6 +26,7 @@ struct ScanExclusionRules: Sendable {
 
     /// Returns `true` when the directory at `path` with the given `name` should
     /// be skipped entirely (including its subtree).
+    /// Hot path — stays in Swift, no ObjC overhead.
     func shouldExclude(name: String, path: String) -> Bool {
         if excludedBasenames.contains(name) {
             return true
@@ -49,75 +47,18 @@ struct ScanExclusionRules: Sendable {
 /// All API is static. Mirrors the design of ``BlocklistManager`` for consistency.
 enum ScanExclusionManager {
 
-    // MARK: Built-in basenames
+    // MARK: Built-in basenames (from KMP)
 
-    /// Directory names that are excluded by default.
-    /// These are development caches, dependency stores, and build artifacts
-    /// that typically contain millions of small files with no user value.
-    static let defaultBasenames: Set<String> = [
-        // JavaScript / Node
-        "node_modules", ".npm", ".yarn", ".pnpm-store",
-        // Git
-        ".git",
-        // Kotlin / JVM
-        ".konan", ".gradle", ".m2",
-        // Xcode / Apple
-        "DerivedData", "xcuserdata", ".swiftpm",
-        // CocoaPods
-        "Pods", ".cocoapods",
-        // Rust
-        ".cargo", ".rustup",
-        // Python
-        "__pycache__", ".venv", ".tox",
-        // Swift Package Manager build
-        ".build",
-        // General caches
-        ".cache", ".ccache",
-        // Containers & VMs
-        ".vagrant", ".docker",
-        // Carthage
-        "Carthage",
-        // Dart / Flutter
-        ".pub-cache",
-    ]
+    /// Directory names that are excluded by default. Source of truth: KMP `SpaScanExclusionRules`.
+    static let defaultBasenames: Set<String> =
+        SpaScanExclusionRules.companion.defaultBasenames
 
-    // MARK: Built-in path prefixes
+    // MARK: Built-in path prefixes (from KMP)
 
-    /// Absolute path prefixes excluded by default.
-    /// Expanded at load time so `~` resolves to the current user's home.
+    /// Absolute path prefixes excluded by default. Source of truth: KMP `SpaScanExclusionRules`.
     static let defaultPathPrefixes: [String] = {
         let home = NSHomeDirectory()
-        return [
-            // APFS firmlink volumes — content under /System/Volumes/Data is
-            // already accessible via firmlinks at /. Scanning both paths
-            // double-counts every file on the Data volume.
-            "/System/Volumes/Data",
-            "/System/Volumes/VM",
-            "/System/Volumes/Preboot",
-            "/System/Volumes/Update",
-            "/System/Volumes/xarts",
-            "/System/Volumes/iSCPreboot",
-            "/System/Volumes/Hardware",
-
-            // User Xcode build artifacts — large generated output, not user content.
-            "\(home)/Library/Developer/Xcode/DerivedData",
-
-            // ~/Library/Caches and CoreSimulator are removed from exclusions:
-            // they contain real user data (simulator runtimes, app caches) that users
-            // should be able to see in Spacie.
-            // Simulator APFS sub-volumes (/Library/Developer/CoreSimulator/Volumes/*)
-            // are on separate disk devices (disk5s1, disk7s1…) and are now stopped
-            // naturally by the cross-device check (crossMountPoints: false).
-
-            "/private/var/folders",
-            "/private/var/db",
-
-            // System temporary directories — contain OS/app session data with no
-            // value for disk-usage analysis. /private/tmp is on the same device
-            // as / so the cross-mount-point check does not exclude it automatically.
-            "/private/tmp",
-            "/tmp",
-        ]
+        return SpaScanExclusionRules.companion.defaultPathPrefixes(home: home)
     }()
 
     // MARK: User exclusions file
@@ -133,12 +74,23 @@ enum ScanExclusionManager {
 
     static var userExclusions: [String] {
         os_unfair_lock_lock(&_lock)
-        defer { os_unfair_lock_unlock(&_lock) }
+        let alreadyLoaded = _loaded
+        let cached = _userExclusions
+        os_unfair_lock_unlock(&_lock)
+
+        if alreadyLoaded { return cached }
+
+        // File I/O outside the lock
+        let loaded = loadUserExclusions()
+
+        os_unfair_lock_lock(&_lock)
         if !_loaded {
             _loaded = true
-            _userExclusions = loadUserExclusions()
+            _userExclusions = loaded
         }
-        return _userExclusions
+        let result = _userExclusions
+        os_unfair_lock_unlock(&_lock)
+        return result
     }
 
     // MARK: Load / Save

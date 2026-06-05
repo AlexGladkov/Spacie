@@ -17,10 +17,7 @@ data class ProcessResult(
     val stderr: ByteArray,
     val exitCode: Int
 ) {
-    /** Convenience: stdout decoded as UTF-8. */
     val stdoutString: String get() = stdout.decodeToString()
-
-    /** Convenience: stderr decoded as UTF-8. */
     val stderrString: String get() = stderr.decodeToString()
 
     override fun equals(other: Any?): Boolean {
@@ -62,41 +59,60 @@ sealed class ProcessError(message: String) : Exception(message) {
 }
 
 /**
- * Platform process runner. Executes external tools asynchronously.
+ * Abstract process runner. Implementations execute external tools asynchronously.
+ *
+ * Introducing this interface makes [com.spacie.core.api.DeviceServiceApi]
+ * implementations testable: production code wires the platform [ProcessRunner]
+ * default, tests inject a fake that records arguments and returns scripted
+ * [ProcessResult]s without touching the real OS.
  */
 @OptIn(ExperimentalObjCName::class)
-@ObjCName("SpaProcessRunner")
-expect class ProcessRunner() {
+@ObjCName("SpaProcessRunnerApi")
+interface ProcessRunnerApi {
 
-    /**
-     * Run an external process and collect its output.
-     *
-     * @param executablePath absolute path to the executable
-     * @param arguments command-line arguments
-     * @param timeoutSeconds optional timeout; null = no timeout
-     * @return [ProcessResult] with stdout, stderr, and exit code
-     * @throws ProcessError on failure
-     */
     suspend fun run(
         executablePath: String,
         arguments: List<String>,
-        timeoutSeconds: Double?
+        timeoutSeconds: Double? = null,
+        stdin: ByteArray? = null,
+        env: Map<String, String>? = null
     ): ProcessResult
 
-    /**
-     * Run an external process, streaming stdout line-by-line.
-     *
-     * @param executablePath absolute path to the executable
-     * @param arguments command-line arguments
-     * @param timeoutSeconds optional timeout; null = no timeout
-     * @param onLine callback invoked for each line of stdout
-     * @return [ProcessResult] with full stdout, stderr, and exit code
-     * @throws ProcessError on failure
-     */
     suspend fun runWithLineOutput(
         executablePath: String,
         arguments: List<String>,
+        timeoutSeconds: Double? = null,
+        stdin: ByteArray? = null,
+        env: Map<String, String>? = null,
+        onLine: (String) -> Unit
+    ): ProcessResult
+}
+
+/**
+ * Default platform implementation of [ProcessRunnerApi].
+ *
+ * The `expect` mirrors the [ProcessRunnerApi] surface; both `actual` impls
+ * (jvm + macosArm64) implement [ProcessRunnerApi] explicitly so call sites can
+ * type their dependency as the interface and accept the production class.
+ */
+@OptIn(ExperimentalObjCName::class)
+@ObjCName("SpaProcessRunner")
+expect class ProcessRunner() : ProcessRunnerApi {
+
+    override suspend fun run(
+        executablePath: String,
+        arguments: List<String>,
         timeoutSeconds: Double?,
+        stdin: ByteArray?,
+        env: Map<String, String>?
+    ): ProcessResult
+
+    override suspend fun runWithLineOutput(
+        executablePath: String,
+        arguments: List<String>,
+        timeoutSeconds: Double?,
+        stdin: ByteArray?,
+        env: Map<String, String>?,
         onLine: (String) -> Unit
     ): ProcessResult
 }

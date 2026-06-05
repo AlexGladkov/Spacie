@@ -39,3 +39,10 @@ Package.resolved
 
 # Swarm reports
 swarm-report/
+
+# KMP / Gradle
+shared/build/
+shared/.gradle/
+.konan/
+.kotlin/
+local.properties

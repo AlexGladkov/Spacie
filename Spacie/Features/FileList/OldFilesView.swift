@@ -75,7 +75,14 @@ final class OldFilesViewModel {
 
     // MARK: Refresh
 
+    // Regular MainActor-isolated; cancelled from `isolated deinit` (Swift 6.1+).
     private var refreshTask: Task<Void, Never>?
+
+    isolated deinit {
+        // Cancel the detached scan so a dismissed view-model doesn't keep
+        // walking the FileTree (5M+ nodes) and mutating orphaned MainActor state.
+        refreshTask?.cancel()
+    }
 
     func refresh(tree: FileTree) {
         refreshTask?.cancel()
@@ -83,7 +90,7 @@ final class OldFilesViewModel {
 
         let cutoff = Date().addingTimeInterval(-ageThreshold)
 
-        refreshTask = Task {
+        refreshTask = Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 var found: [FileNodeInfo] = []
                 let count = tree.nodeCount
@@ -98,6 +105,7 @@ final class OldFilesViewModel {
                 return found
             }.value
 
+            guard let self else { return }
             guard !Task.isCancelled else { return }
 
             self.files = result
@@ -176,14 +184,27 @@ struct OldFilesView: View {
     var tree: FileTree?
 
     @State private var quickLookURL: URL?
+    @State private var trashTargetInfos: [FileNodeInfo] = []
+    @State private var showTrashConfirm: Bool = false
+    @State private var trashError: String?
+    @State private var showTrashError: Bool = false
+
+    /// Callback invoked when files are trashed.
+    var onFilesTrashed: (([UInt32]) -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if viewModel.filteredFiles.isEmpty {
-                emptyState
-            } else {
+            ContentStateView(
+                isLoading: viewModel.isRefreshing,
+                isEmpty: viewModel.filteredFiles.isEmpty,
+                loadingTitle: "Finding old files…",
+                loadingSubtitle: "Walking the tree to collect files past the age threshold.",
+                emptyIcon: "calendar",
+                emptyTitle: "No old files found",
+                emptyMessage: "Try adjusting the age threshold or scanning a different volume."
+            ) {
                 fileTable
             }
             if !viewModel.selectionSummary.isEmpty || !viewModel.files.isEmpty {
@@ -194,6 +215,24 @@ struct OldFilesView: View {
         .onAppear {
             if let tree {
                 viewModel.refresh(tree: tree)
+            }
+        }
+        .alert(
+            trashConfirmTitle,
+            isPresented: $showTrashConfirm
+        ) {
+            Button("Cancel", role: .cancel) { trashTargetInfos = [] }
+            Button("Move to Trash", role: .destructive) {
+                performTrash(infos: trashTargetInfos)
+            }
+        } message: {
+            Text(trashConfirmMessage)
+        }
+        .alert("Error", isPresented: $showTrashError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let trashError {
+                Text(trashError)
             }
         }
     }
@@ -337,6 +376,14 @@ struct OldFilesView: View {
 
         Divider()
 
+        Button("Move to Trash", role: .destructive) {
+            trashTargetInfos = selectedInfos
+            showTrashConfirm = true
+        }
+        .keyboardShortcut(.delete, modifiers: .command)
+
+        Divider()
+
         if let dropZone = dropZoneViewModel {
             Button("Add to Drop Zone") {
                 for info in selectedInfos {
@@ -344,6 +391,55 @@ struct OldFilesView: View {
                 }
             }
         }
+    }
+
+    // MARK: Trash
+
+    private var trashConfirmTitle: String {
+        trashTargetInfos.count == 1
+            ? "Move \u{201C}\(trashTargetInfos.first?.name ?? "")\u{201D} to Trash?"
+            : "Move \(trashTargetInfos.count) files to Trash?"
+    }
+
+    private var trashConfirmMessage: String {
+        let total = trashTargetInfos.reduce(UInt64(0)) { $0 + $1.logicalSize }
+        return "Frees \(total.formattedSize). You can restore from Trash if needed."
+    }
+
+    private func performTrash(infos: [FileNodeInfo]) {
+        Task {
+            let manager = TrashManager()
+            var removed: [UInt32] = []
+            var firstError: String?
+            for info in infos {
+                let url = URL(fileURLWithPath: info.fullPath)
+                do {
+                    _ = try await manager.moveToTrash(url: url)
+                    removed.append(info.id)
+                } catch let trashErr as TrashError {
+                    // "File not found" → drop from list (already gone).
+                    if case .fileNotFound = trashErr {
+                        removed.append(info.id)
+                    } else if firstError == nil {
+                        firstError = trashErr.errorDescription ?? "Failed to move to Trash"
+                    }
+                } catch {
+                    if firstError == nil {
+                        firstError = error.localizedDescription
+                    }
+                }
+            }
+            if !removed.isEmpty {
+                viewModel.files.removeAll { removed.contains($0.id) }
+                viewModel.selectedFiles.subtract(removed)
+                onFilesTrashed?(removed)
+            }
+            if let firstError {
+                trashError = firstError
+                showTrashError = true
+            }
+        }
+        trashTargetInfos = []
     }
 
     // MARK: Empty State

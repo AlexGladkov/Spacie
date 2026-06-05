@@ -13,8 +13,19 @@ import UniformTypeIdentifiers
 /// to from the result step of the transfer wizard.
 struct AppArchiveView: View {
 
-    @State private var viewModel = AppArchiveViewModel()
+    @State private var viewModel: AppArchiveViewModel
     @State private var showDeleteConfirmation = false
+
+    init() {
+        _viewModel = State(initialValue: AppArchiveViewModel())
+    }
+
+    #if DEBUG
+    /// Preview/test initializer that accepts a pre-built VM.
+    init(viewModel: AppArchiveViewModel) {
+        _viewModel = State(initialValue: viewModel)
+    }
+    #endif
 
     private static let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -240,204 +251,24 @@ struct AppArchiveView: View {
     }
 }
 
-// MARK: - Install From Archive Sheet
+// MARK: - Previews
 
-/// Minimal sheet that connects a device and installs a single archived IPA.
-private struct InstallFromArchiveSheet: View {
-
-    let app: ArchivedApp
-    @Environment(\.dismiss) private var dismiss
-
-    // Device observation
-    @State private var device: DeviceInfo?
-    @State private var trustState: TrustState = .notTrusted
-    @State private var observationTask: Task<Void, Never>?
-
-    // Install state
-    @State private var isInstalling = false
-    @State private var installProgress: Double = 0
-    @State private var installDone = false
-    @State private var installError: String?
-
-    private let service: any iMobileDeviceProtocol = iMobileDeviceService()
-
-    var body: some View {
-        VStack(spacing: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "iphone.and.arrow.right.and.arrow.left.inward")
-                    .font(.title)
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Install \(app.displayName)")
-                        .font(.headline)
-                    Text(app.bundleID)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-
-            Divider()
-
-            if installDone {
-                doneView
-            } else if isInstalling {
-                installingView
-            } else {
-                deviceWaitView
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(24)
-        .onAppear { startObservingDevice() }
-        .onDisappear { observationTask?.cancel() }
-    }
-
-    // MARK: Device wait
-
-    @ViewBuilder
-    private var deviceWaitView: some View {
-        VStack(spacing: 16) {
-            if let device {
-                HStack(spacing: 10) {
-                    Image(systemName: "iphone")
-                        .font(.title2)
-                        .foregroundStyle(Color.accentColor)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.deviceName).font(.headline)
-                        Text("iOS \(device.productVersion)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    trustBadge
-                }
-                .padding(12)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-
-                if trustState == .notTrusted {
-                    Text("Tap \"Trust\" on the iPhone when prompted.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else if trustState == .dialogShown {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Waiting for Trust confirmation…")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Connect the target iPhone via USB…")
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let err = installError {
-                Text(err).font(.caption).foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 12) {
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered)
-                Spacer()
-                Button("Install") {
-                    Task { await beginInstall() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(device == nil || trustState != .trusted || isInstalling)
-            }
-        }
-    }
-
-    @ViewBuilder private var trustBadge: some View {
-        switch trustState {
-        case .trusted:
-            Label("Trusted", systemImage: "checkmark.shield.fill")
-                .font(.caption.weight(.medium)).foregroundStyle(.green)
-        case .dialogShown:
-            Label("Waiting…", systemImage: "clock")
-                .font(.caption).foregroundStyle(.orange)
-        case .notTrusted:
-            Label("Not Trusted", systemImage: "exclamationmark.shield")
-                .font(.caption).foregroundStyle(.red)
-        }
-    }
-
-    // MARK: Installing
-
-    private var installingView: some View {
-        VStack(spacing: 12) {
-            ProgressView(value: installProgress > 0 ? installProgress : nil)
-                .progressViewStyle(.linear)
-            Text(installProgress > 0
-                 ? "Installing… \(Int(installProgress * 100))%"
-                 : "Installing…")
-                .font(.callout).foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: Done
-
-    private var doneView: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(.green)
-            Text("Installed on \(device?.deviceName ?? "iPhone")")
-                .font(.headline)
-            Button("Done") { dismiss() }
-                .buttonStyle(.borderedProminent)
-        }
-    }
-
-    // MARK: Logic
-
-    private func startObservingDevice() {
-        observationTask = Task {
-            for await event in service.observeDevices(pollingInterval: 2.0) {
-                await handleEvent(event)
-                if Task.isCancelled { break }
-            }
-        }
-    }
-
-    @MainActor
-    private func handleEvent(_ event: DeviceEvent) {
-        switch event {
-        case .connected(let d):
-            if device == nil {
-                device = d
-                trustState = .notTrusted
-                Task {
-                    trustState = await service.validateTrust(udid: d.udid)
-                }
-            }
-        case .disconnected(let udid):
-            if device?.udid == udid { device = nil; trustState = .notTrusted }
-        case .trustStateChanged(let udid, let state):
-            if device?.udid == udid { trustState = state }
-        case .error:
-            break
-        }
-    }
-
-    @MainActor
-    private func beginInstall() async {
-        guard let udid = device?.udid else { return }
-        installError = nil
-        isInstalling = true
-        installProgress = 0
-        do {
-            try await service.installIPA(udid: udid, ipaPath: app.ipaURL) { p in
-                Task { @MainActor in installProgress = p }
-            }
-            installDone = true
-            observationTask?.cancel()
-        } catch {
-            installError = error.localizedDescription
-        }
-        isInstalling = false
-    }
+#if DEBUG
+#Preview("AppArchive — populated") {
+    let mockService = MockAppArchiveService()
+    mockService.archivedAppsToReturn = [
+        ArchivedApp.previewSample,
+    ]
+    let vm = AppArchiveViewModel(service: mockService)
+    return AppArchiveView(viewModel: vm)
+        .task { await vm.load() }
+        .frame(width: 720, height: 460)
 }
+
+#Preview("AppArchive — empty") {
+    let vm = AppArchiveViewModel(service: MockAppArchiveService())
+    return AppArchiveView(viewModel: vm)
+        .task { await vm.load() }
+        .frame(width: 720, height: 460)
+}
+#endif
