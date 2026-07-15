@@ -25,7 +25,9 @@ env:
   APP_NAME: Spacie
   SCHEME: Spacie
   BUNDLE_ID: com.spacie.app
-  XCODE_VERSION: '16.4'
+  # Spacie's code uses Swift 6.2 features (e.g. isolated deinit). Must match the
+  # local toolchain (Xcode 26 / Swift 6.2) — Xcode 16.x (Swift 6.0) fails to build.
+  XCODE_VERSION: '26.0'
   # Public download location for DMGs (GitHub Releases) — used as the
   # Sparkle appcast enclosure URL prefix.
   DOWNLOAD_REPO: ${{ github.repository }}
@@ -36,7 +38,7 @@ jobs:
   # ---------------------------------------------------------------
   build:
     name: Build & Package
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
