@@ -28,8 +28,8 @@ settings:
     CODE_SIGN_IDENTITY: "Developer ID Application: Alex Gladkov (7N3PU42797)"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: "7N3PU42797"
-    MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "1.4.1"
+    CURRENT_PROJECT_VERSION: "6"
     PRODUCT_NAME: Spacie
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
@@ -79,6 +79,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.spacie.app
         INFOPLIST_FILE: Spacie/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSUIElement: false
         CODE_SIGN_ENTITLEMENTS: Spacie/Spacie.entitlements
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/shared/build/XCFrameworks/current"

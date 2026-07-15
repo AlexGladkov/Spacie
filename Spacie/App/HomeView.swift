@@ -81,6 +81,12 @@ struct HomeView: View {
             .padding(.horizontal, 40)
 
             Spacer()
+
+            // Running build version — pinned to the very bottom.
+            Text("v\(Bundle.main.spacieVersionDisplay)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))

@@ -62,6 +62,7 @@
 		8E9F991D3BC54949053E1129 /* OldFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ADD1ED24F682076B428E9B2 /* OldFilesView.swift */; };
 		8EB599F6F51C8FE0C22CD6AD /* KMPScanProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EA7C2FE386ABD602D8EC7B6 /* KMPScanProfile.swift */; };
 		957B69D0D2F5357391E36E5B /* ScanOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAEB60FE7EF3012891A9CAB3 /* ScanOrchestrator.swift */; };
+		9855462D328C9C87EADA8C14 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BDC62EBBF4C10EA78190B004 /* Assets.xcassets */; };
 		9951248DE96A3485768D0E82 /* iTransferViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF06C2776345DB571FD48787 /* iTransferViewModel.swift */; };
 		997804F5330E6FFF4210F9C7 /* View+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 405322B682AC14B502D98E3F /* View+Extensions.swift */; };
 		9D63B950B0321949A962F84C /* KMPInputValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E13E70D9C7F4C0D62EB9C419 /* KMPInputValidator.swift */; };
@@ -192,6 +193,7 @@
 		B52E0D813E5CC4E62E0D3749 /* iTransferStepIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferStepIndicator.swift; sourceTree = "<group>"; };
 		BA79C8E7A413166DB4F6EDA6 /* Spacie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Spacie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD784BF84D5CFCBFF474B86F /* InputValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputValidatorTests.swift; sourceTree = "<group>"; };
+		BDC62EBBF4C10EA78190B004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BF06C2776345DB571FD48787 /* iTransferViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iTransferViewModel.swift; sourceTree = "<group>"; };
 		BFBBC2177DC92CFE105B5444 /* MockiMobileDeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockiMobileDeviceService.swift; sourceTree = "<group>"; };
 		BFEB317139D01C1DB0F2CD8C /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
@@ -569,6 +571,7 @@
 		BBF7E9F5A3907575E0817754 /* Spacie */ = {
 			isa = PBXGroup;
 			children = (
+				BDC62EBBF4C10EA78190B004 /* Assets.xcassets */,
 				4E65E821F23C74AF3A077883 /* Info.plist */,
 				2367091D3FC48297395FFA1B /* Spacie.entitlements */,
 				1E9F2C806CEF2F41094E5636 /* App */,
@@ -678,6 +681,7 @@
 			buildPhases = (
 				0ABECDAF88DB4C449AF17E73 /* Build KMP SpacieKit */,
 				5CBAC87E0A8B6ED411FC5252 /* Sources */,
+				265C2486A788F6138B43CE71 /* Resources */,
 				1423A8EED17BBFDC6F22881F /* Frameworks */,
 			);
 			buildRules = (
@@ -761,6 +765,14 @@
 				646B65EA954057B8D21C4E8C /* testStepIndicator_dependencyCheckStep.1.png in Resources */,
 				4490E24A85E09F6F04278333 /* testStepIndicator_resultStep.1.png in Resources */,
 				B8F833D04D56130E9E99FDF2 /* testStepIndicator_transferringStep.1.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		265C2486A788F6138B43CE71 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9855462D328C9C87EADA8C14 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -943,7 +955,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Alex Gladkov (7N3PU42797)";
 				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 7N3PU42797;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -968,7 +980,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "MIT License";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1077,7 +1089,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Alex Gladkov (7N3PU42797)";
 				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 7N3PU42797;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1096,7 +1108,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "MIT License";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = Spacie;
@@ -1145,7 +1157,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application: Alex Gladkov (7N3PU42797)";
 				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 7N3PU42797;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1164,7 +1176,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "MIT License";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.4.0;
+				MARKETING_VERSION = 1.4.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = Spacie;
