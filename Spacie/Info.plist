@@ -12,5 +12,23 @@
 	<string>Spacie scans all files on your Mac to report disk usage, including media files.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
+
+	<!-- ============================================================
+	     Sparkle auto-update configuration (DIRECT distribution only).
+	     Appcast hosted on GitHub Pages; updates verified with EdDSA.
+	     Private key lives in the login Keychain (account "Spacie") and,
+	     for CI, in the SPARKLE_ED_PRIVATE_KEY secret. Public key below.
+	     ============================================================ -->
+	<key>SUFeedURL</key>
+	<string>https://alexgladkov.github.io/Spacie/appcast.xml</string>
+
+	<key>SUPublicEDKey</key>
+	<string>HdXu+fRobSIkpzURJ169IyF6+1Xvbdqfae0ny1j5nwA=</string>
+
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

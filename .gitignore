@@ -37,6 +37,10 @@ Package.resolved
 *.dSYM.zip
 *.dSYM
 
+# Release artifacts
+*.dmg
+dist/
+
 # Swarm reports
 swarm-report/
 

@@ -11,16 +11,25 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: false
 
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    from: "2.6.0"
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "15.0"
     SWIFT_STRICT_CONCURRENCY: complete
     ENABLE_HARDENED_RUNTIME: YES
-    CODE_SIGN_IDENTITY: "-"
+    # Stable Developer ID signature — gives a constant designated requirement so
+    # macOS TCC (Full Disk / folder access) is NOT reset on every rebuild.
+    # Also makes Release builds distribution-ready (notarizable).
+    CODE_SIGN_IDENTITY: "Developer ID Application: Alex Gladkov (7N3PU42797)"
     CODE_SIGN_STYLE: Manual
-    MARKETING_VERSION: "0.0.1"
-    CURRENT_PROJECT_VERSION: "3"
+    DEVELOPMENT_TEAM: "7N3PU42797"
+    MARKETING_VERSION: "1.4.0"
+    CURRENT_PROJECT_VERSION: "5"
     PRODUCT_NAME: Spacie
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
@@ -47,23 +56,32 @@ targets:
           cd "$SRCROOT/shared"
           if [ "$CONFIGURATION" = "Debug" ]; then
             ./gradlew assembleSpacieKitDebugXCFramework --no-daemon -q
+            CFG=debug
           else
             ./gradlew assembleSpacieKitReleaseXCFramework --no-daemon -q
+            CFG=release
           fi
+          # Point a stable `current` symlink at the config we just built, so the
+          # linker/search paths resolve the RIGHT framework per configuration
+          # (Release used to link the debug XCFramework — latent bug).
+          ln -sfn "$CFG" "$SRCROOT/shared/build/XCFrameworks/current"
         basedOnDependencyAnalysis: false
     sources:
       - path: Spacie
         excludes:
           - "**/*Tests*"
     dependencies:
-      - framework: shared/build/XCFrameworks/debug/SpacieKit.xcframework
+      - framework: shared/build/XCFrameworks/current/SpacieKit.xcframework
         embed: false
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.spacie.app
+        INFOPLIST_FILE: Spacie/Info.plist
         INFOPLIST_KEY_LSUIElement: false
         CODE_SIGN_ENTITLEMENTS: Spacie/Spacie.entitlements
-        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/shared/build/XCFrameworks/debug"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/shared/build/XCFrameworks/current"
 
   SpacieTests:
     type: bundle.unit-test
