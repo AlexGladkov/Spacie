@@ -3,12 +3,12 @@
     <channel>
         <title>Spacie</title>
         <item>
-            <title>1.4.0</title>
-            <pubDate>Wed, 15 Jul 2026 14:12:01 +0000</pubDate>
-            <sparkle:version>3</sparkle:version>
-            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+            <title>1.4.1</title>
+            <pubDate>Wed, 15 Jul 2026 16:21:03 +0000</pubDate>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/AlexGladkov/Spacie/releases/download/v1.4.0/Spacie-1.4.0-arm64.dmg" length="4738504" type="application/octet-stream" sparkle:edSignature="xCRQ7pLPX2Funnsg8T0deWuu5+n6u/3UEHo5jHTUQw0EMIhU+DyjXIn60aykv2zsSYu+WSIEZwKwA0Xdiyw7Cg=="/>
+            <enclosure url="https://github.com/AlexGladkov/Spacie/releases/download/v1.4.1/Spacie-1.4.1-arm64.dmg" length="5136264" type="application/octet-stream" sparkle:edSignature="ZHKLfz9nah7KTwi11oi1t6JQQhXbG2apNAe3FwTz4lqezmJblIGpRGI5WDCyRtiy8v4I2LRLQ5OQ5XtsczBOAQ=="/>
         </item>
     </channel>
 </rss>
