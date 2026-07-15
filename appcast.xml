@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Spacie</title>
+        <item>
+            <title>1.4.0</title>
+            <pubDate>Wed, 15 Jul 2026 14:12:01 +0000</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/AlexGladkov/Spacie/releases/download/v1.4.0/Spacie-1.4.0-arm64.dmg" length="4738504" type="application/octet-stream" sparkle:edSignature="xCRQ7pLPX2Funnsg8T0deWuu5+n6u/3UEHo5jHTUQw0EMIhU+DyjXIn60aykv2zsSYu+WSIEZwKwA0Xdiyw7Cg=="/>
+        </item>
+    </channel>
+</rss>
