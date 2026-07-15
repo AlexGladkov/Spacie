@@ -19,6 +19,9 @@ struct SpacieApp: App {
     @State private var volumeManager = VolumeManager.shared
     @State private var permissionManager = PermissionManager()
 
+    /// Sparkle-backed in DIRECT (DMG) builds, no-op for App Store / previews.
+    @State private var updateService: any UpdateServicing = makeUpdateService()
+
     // MARK: - Body
 
     var body: some Scene {
@@ -47,6 +50,7 @@ struct SpacieApp: App {
         .defaultSize(width: 1000, height: 700)
         .windowResizability(.contentMinSize)
         .commands {
+            spacieAppCommands
             spacieFileCommands
             spacieViewCommands
             spacieScanCommands
@@ -54,7 +58,22 @@ struct SpacieApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(updateService: updateService)
+        }
+    }
+
+    // MARK: - App Commands
+
+    /// Adds "Check for Updates…" to the application menu (after the About item).
+    /// Hidden in builds without update support (App Store).
+    private var spacieAppCommands: some Commands {
+        CommandGroup(after: .appInfo) {
+            if updateService.updatesSupported {
+                Button("Check for Updates…") {
+                    updateService.checkForUpdates()
+                }
+                .disabled(!updateService.canCheckForUpdates)
+            }
         }
     }
 

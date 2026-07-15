@@ -34,7 +34,11 @@ cd "$SHARED_DIR"
 
 XCFW_PATH="$SHARED_DIR/build/XCFrameworks/$GRADLE_CONFIG/SpacieKit.xcframework"
 if [ -d "$XCFW_PATH" ]; then
+    # Stable `current` symlink → the config just built. The Xcode project links
+    # against .../XCFrameworks/current so each configuration gets the right one.
+    ln -sfn "$GRADLE_CONFIG" "$SHARED_DIR/build/XCFrameworks/current"
     echo "[SpacieKit] ✓ XCFramework ready: $XCFW_PATH"
+    echo "[SpacieKit] ✓ current -> $GRADLE_CONFIG"
 else
     echo "[SpacieKit] ✗ ERROR: XCFramework not found at $XCFW_PATH" >&2
     exit 1

@@ -15,6 +15,8 @@ import SwiftUI
 /// All preferences are persisted with `@AppStorage` and take effect immediately.
 struct SettingsView: View {
 
+    let updateService: any UpdateServicing
+
     var body: some View {
         TabView {
             GeneralSettingsTab()
@@ -49,7 +51,7 @@ struct SettingsView: View {
                 }
             #endif
 
-            AboutSettingsTab()
+            AboutSettingsTab(updateService: updateService)
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
@@ -686,6 +688,12 @@ private struct iOSTransferSettingsTab: View {
 /// Displays application information, links, and license.
 private struct AboutSettingsTab: View {
 
+    let updateService: any UpdateServicing
+
+    /// Mirrors Sparkle's `SUEnableAutomaticChecks` so the toggle reflects and
+    /// drives the persisted preference reactively.
+    @AppStorage("SUEnableAutomaticChecks") private var autoCheck: Bool = true
+
     private let appVersion: String = {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -710,6 +718,21 @@ private struct AboutSettingsTab: View {
             Text("Version \(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+
+            if updateService.updatesSupported {
+                VStack(spacing: 8) {
+                    Button {
+                        updateService.checkForUpdates()
+                    } label: {
+                        Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(!updateService.canCheckForUpdates)
+
+                    Toggle("Check for updates automatically", isOn: $autoCheck)
+                        .toggleStyle(.checkbox)
+                        .font(.caption)
+                }
+            }
 
             Divider()
                 .frame(width: 200)

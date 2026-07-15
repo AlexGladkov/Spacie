@@ -1,0 +1,260 @@
+# ============================================================
+# Spacie — macOS Release Pipeline
+# Triggers on push of version tags (v*).
+# KMP XCFramework → build → Developer ID sign → notarize → staple →
+# DMG → generate Sparkle appcast → publish GitHub Release + Pages feed.
+# ============================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  APP_NAME: Spacie
+  SCHEME: Spacie
+  BUNDLE_ID: com.spacie.app
+  XCODE_VERSION: '16.4'
+  # Public download location for DMGs (GitHub Releases) — used as the
+  # Sparkle appcast enclosure URL prefix.
+  DOWNLOAD_REPO: ${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------
+  # Job 1: Build + Sign + Notarize + DMG + Appcast
+  # ---------------------------------------------------------------
+  build:
+    name: Build & Package
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Point Gradle at the runner JDK
+        # shared/gradle.properties pins org.gradle.java.home to a local dev path.
+        # Rewrite it to the runner's JAVA_HOME so the KMP build works in CI.
+        run: |
+          sed -i '' "s|^org.gradle.java.home=.*|org.gradle.java.home=${JAVA_HOME}|" shared/gradle.properties
+          grep org.gradle.java.home shared/gradle.properties
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "build_number=${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          echo "Version: ${TAG}, Build: ${GITHUB_RUN_NUMBER}"
+
+      - name: Install tools (xcodegen, create-dmg)
+        run: brew install xcodegen create-dmg
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve SPM dependencies
+        run: xcodebuild -resolvePackageDependencies -project Spacie.xcodeproj -scheme "${SCHEME}"
+
+      - name: Run unit tests (smoke gate)
+        # Non-blocking for now — some scanner tests need TCC/Full Disk Access
+        # that CI runners lack. Harden into a blocking gate later.
+        continue-on-error: true
+        run: |
+          xcodebuild test \
+            -project Spacie.xcodeproj \
+            -scheme "${SCHEME}" \
+            -configuration Debug \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            | tail -30
+
+      - name: Archive app (unsigned; signed explicitly below)
+        run: |
+          xcodebuild archive \
+            -project Spacie.xcodeproj \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -archivePath build/Spacie.xcarchive \
+            -derivedDataPath build/DerivedData \
+            MARKETING_VERSION=${{ steps.version.outputs.version }} \
+            CURRENT_PROJECT_VERSION=${{ steps.version.outputs.build_number }} \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Export app bundle
+        run: |
+          mkdir -p build/export
+          cp -R "build/Spacie.xcarchive/Products/Applications/Spacie.app" build/export/
+
+      - name: Import Developer ID certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
+
+      - name: Developer ID sign app (Sparkle-aware)
+        run: |
+          ./scripts/codesign-app.sh \
+            build/export/Spacie.app \
+            "${{ secrets.APPLE_SIGN_IDENTITY }}" \
+            Spacie/Spacie.entitlements
+
+      - name: Create DMG (from signed app)
+        run: |
+          ./scripts/create-dmg.sh \
+            build/export/Spacie.app \
+            "build/Spacie-${{ steps.version.outputs.version }}-arm64.dmg" \
+            "${{ steps.version.outputs.version }}"
+
+      - name: Notarize + staple DMG
+        env:
+          NOTARY_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          KEY_PATH="${RUNNER_TEMP}/AuthKey.p8"
+          echo "${APPLE_API_KEY_P8_BASE64}" | base64 --decode > "${KEY_PATH}"
+          export NOTARY_API_KEY_PATH="${KEY_PATH}"
+          ./scripts/notarize.sh "build/Spacie-${{ steps.version.outputs.version }}-arm64.dmg"
+          rm -f "${KEY_PATH}"
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          mkdir -p dist
+          cp "build/Spacie-${{ steps.version.outputs.version }}-arm64.dmg" dist/
+          ./scripts/generate-appcast.sh dist \
+            "https://github.com/${DOWNLOAD_REPO}/releases/download/${GITHUB_REF_NAME}/"
+
+      - name: Compute DMG checksum
+        id: checksum
+        run: |
+          DMG="build/Spacie-${{ steps.version.outputs.version }}-arm64.dmg"
+          SHA=$(shasum -a 256 "${DMG}" | awk '{print $1}')
+          echo "sha256=${SHA}" >> "${GITHUB_OUTPUT}"
+          echo "SHA-256: ${SHA}"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spacie-${{ steps.version.outputs.version }}-arm64.dmg
+          path: build/Spacie-${{ steps.version.outputs.version }}-arm64.dmg
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload appcast artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appcast
+          path: dist/appcast.xml
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Job 2: Create GitHub Release (DMG asset)
+  # ---------------------------------------------------------------
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download DMG artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Spacie-${{ steps.version.outputs.version }}-arm64.dmg
+          path: artifacts/
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          DMG="artifacts/Spacie-${{ steps.version.outputs.version }}-arm64.dmg"
+          SHA=$(sha256sum "${DMG}" | awk '{print $1}')
+          echo "sha256=${SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Spacie v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: true
+          body: |
+            ## Spacie v${{ steps.version.outputs.version }}
+
+            ### Installation
+            1. Download `Spacie-${{ steps.version.outputs.version }}-arm64.dmg`
+            2. Open the DMG and drag Spacie to Applications
+
+            Already have Spacie? It will update itself automatically
+            (Sparkle) — or use **Spacie ▸ Check for Updates…**.
+
+            ### System Requirements
+            - macOS 15.0 (Sequoia) or later
+            - Apple Silicon
+
+            ### Checksum
+            ```
+            SHA-256: ${{ steps.checksum.outputs.sha256 }}
+            ```
+
+            > Signed with Developer ID and notarized by Apple.
+          files: |
+            artifacts/Spacie-${{ steps.version.outputs.version }}-arm64.dmg
+
+  # ---------------------------------------------------------------
+  # Job 3: Publish Sparkle appcast to GitHub Pages
+  # ---------------------------------------------------------------
+  pages:
+    name: Publish Appcast
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download appcast artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: appcast
+          path: site/
+
+      - name: Deploy appcast to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          keep_files: true
