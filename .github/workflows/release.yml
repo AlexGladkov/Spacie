@@ -80,18 +80,13 @@ jobs:
       - name: Resolve SPM dependencies
         run: xcodebuild -resolvePackageDependencies -project Spacie.xcodeproj -scheme "${SCHEME}"
 
-      - name: Run unit tests (smoke gate)
-        # Non-blocking for now — some scanner tests need TCC/Full Disk Access
-        # that CI runners lack. Harden into a blocking gate later.
-        continue-on-error: true
-        run: |
-          xcodebuild test \
-            -project Spacie.xcodeproj \
-            -scheme "${SCHEME}" \
-            -configuration Debug \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            | tail -30
+      - name: Build KMP XCFramework (Release)
+        # Must run BEFORE xcodebuild: the Xcode target links
+        # shared/build/XCFrameworks/current/SpacieKit.xcframework, and xcodebuild
+        # validates that path up-front — before the in-project prebuild phase
+        # would create it. This step builds the release framework and points the
+        # `current` symlink at it.
+        run: ./scripts/build-kmp.sh Release
 
       - name: Archive app (unsigned; signed explicitly below)
         run: |

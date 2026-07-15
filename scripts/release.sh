@@ -35,7 +35,11 @@ echo "=== Spacie Release ${VERSION} ==="
 echo "[1/7] Regenerating project (xcodegen)…"
 command -v xcodegen >/dev/null && xcodegen generate >/dev/null || echo "  (xcodegen not found, using existing project)"
 
-echo "[2/7] Archiving (unsigned; signed explicitly in step 4)…"
+# Build the release XCFramework and point `current` at it BEFORE xcodebuild —
+# xcodebuild validates the linked framework path up-front, before the in-project
+# prebuild phase would create it (fails on a clean checkout otherwise).
+echo "[2/7] Building KMP XCFramework (Release) + archiving…"
+"${SCRIPT_DIR}/build-kmp.sh" Release
 xcodebuild archive \
     -project Spacie.xcodeproj \
     -scheme Spacie \
